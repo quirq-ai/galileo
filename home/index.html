@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>galileo</title>
+		<meta name="description" content="A local gateway: every app on this machine at its own address, with the XO toolbar in its pages." />
+		<link rel="icon" href="/__xo/home/icon.svg" type="image/svg+xml" />
+		<link rel="stylesheet" href="/__xo/home/home.css" />
+		<script src="/__xo/home/home.js" defer></script>
+	</head>
+	<body>
+		<main class="wrap">
+			<header class="top">
+				<p class="brand"><span class="mark">galileo</span></p>
+				<a class="button" href="/launcher">Launcher</a>
+			</header>
+
+			<section class="hero">
+				<h1>Every app on this machine, at its own address.</h1>
+				<p class="lede">
+					galileo is a local gateway. It puts every folder of your XO root, and any app you add, behind this one port,
+					each at <code><span class="name">name</span>.localhost:<span data-port>4100</span></code>, and carries the XO
+					toolbar into their pages.
+				</p>
+			</section>
+
+			<section class="card" aria-labelledby="routes-title">
+				<div class="card-head">
+					<h2 id="routes-title">Routes now</h2>
+					<p class="muted" id="summary" aria-live="polite">Looking…</p>
+				</div>
+				<div class="table-scroll">
+					<table class="routes">
+						<thead>
+							<tr>
+								<th scope="col">Address</th>
+								<th scope="col">Goes to</th>
+								<th scope="col">State</th>
+							</tr>
+						</thead>
+						<tbody id="routes">
+							<tr>
+								<td colspan="3" class="muted">Looking for apps…</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+				<p class="muted small" id="roots"></p>
+			</section>
+
+			<section aria-labelledby="how-title">
+				<h2 id="how-title" class="section-title">How it works</h2>
+				<div class="grid">
+					<article class="card">
+						<h3>Addresses</h3>
+						<ul>
+							<li><code>acme.localhost:<span data-port>4100</span></code> opens an app's default version.</li>
+							<li><code>dev.acme.localhost:<span data-port>4100</span></code> opens one version of it.</li>
+							<li><code>acme.localhost:<span data-port>4100</span>/dev/…</code> sends you to that version.</li>
+							<li>Each address is its own origin, so apps never share cookies, storage or service workers.</li>
+						</ul>
+					</article>
+					<article class="card">
+						<h3>Where apps come from</h3>
+						<ul>
+							<li>Every folder in the XO root is an app named after it: <code>Gamma Notes</code> becomes <code>gamma-notes</code>.</li>
+							<li>An xo-project's <code>.xo/project.json</code> gives it its display name.</li>
+							<li>Add anything else, a port or a deployment, in the <a href="/launcher">launcher</a>.</li>
+							<li>Folders come and go live. Hidden folders and <code>node_modules</code> never become apps.</li>
+						</ul>
+					</article>
+					<article class="card">
+						<h3>Running them</h3>
+						<ul>
+							<li>A folder with a dev command (its <code>.claude/launch.json</code>, or <code>dev</code> or <code>start</code> in <code>package.json</code>) gets its dev server.</li>
+							<li>That server starts when you first open the app and stops after 30 idle minutes.</li>
+							<li>One already running from the folder is used as it is.</li>
+							<li>Any other folder is served as files: its <code>index.html</code>, or a listing.</li>
+						</ul>
+					</article>
+					<article class="card">
+						<h3>The toolbar</h3>
+						<ul>
+							<li>Every HTML page gets the XO toolbar: inspect, comment, capture, record, ask the agent.</li>
+							<li>Comments, captures and designs stay in galileo's <code>data/</code> folder.</li>
+							<li>Each app's toolbar design is set in the <a href="/launcher">launcher</a>.</li>
+						</ul>
+					</article>
+					<article class="card">
+						<h3>For programs</h3>
+						<ul>
+							<li><code>GET /__xo/health</code>: the app names and roots, cheap enough to poll.</li>
+							<li><code>GET /__xo/api/targets</code>: every app in detail, for pages on this origin.</li>
+							<li>Mounted in another server, as xo-client does, galileo answers only <code>*.localhost</code> and <code>/__xo/*</code>.</li>
+						</ul>
+					</article>
+				</div>
+			</section>
+
+			<footer class="muted small">galileo on port <span data-port>4100</span>. Nothing here leaves this machine.</footer>
+		</main>
+	</body>
+</html>

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>About · Acme Notes</title>
+		<link rel="stylesheet" href="/styles.css" />
+		<script src="/app.js" nonce="{{nonce}}" defer></script>
+	</head>
+	<body>
+		<header class="site-header">
+			<a class="brand" href="/">Acme Notes</a>
+			<nav class="site-nav" aria-label="Main">
+				<a href="/">Product</a>
+				<a href="/pricing">Pricing</a>
+				<a href="/about" aria-current="page">About</a>
+			</nav>
+			<a class="button button-small" href="/pricing" data-testid="header-cta">Start free</a>
+		</header>
+
+		<main class="page narrow">
+			<h1>About Acme Notes</h1>
+			<p class="lede">We are four people who kept losing decisions in meeting notes.</p>
+			<p>
+				Acme Notes started as a script that searched our notes folder for the word "decided". It grew into a
+				notes app that treats links, people and decisions as first-class things, while keeping every note a
+				plain Markdown file.
+			</p>
+			<blockquote id="principle">Your notes should outlive the app you wrote them in.</blockquote>
+		</main>
+
+		<footer class="site-footer">
+			<p>Acme Notes is a sample app for the XO toolbar demo.</p>
+		</footer>
+	</body>
+</html>

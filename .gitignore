@@ -1,0 +1,5 @@
+# Written by the gateway at run time: apps, threads, captures, designs, agent requests.
+data/
+node_modules/
+# Local settings; .example.env shows them.
+.env.local

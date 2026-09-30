@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Acme Notes · Notes that link themselves</title>
+		<link rel="stylesheet" href="/styles.css" />
+		<script src="/app.js" nonce="{{nonce}}" defer></script>
+	</head>
+	<body>
+		<header class="site-header">
+			<a class="brand" href="/">Acme Notes</a>
+			<nav class="site-nav" aria-label="Main">
+				<a href="/" aria-current="page">Product</a>
+				<a href="/pricing">Pricing</a>
+				<a href="/about">About</a>
+			</nav>
+			<a class="button button-small" href="/pricing" data-testid="header-cta">Start free</a>
+		</header>
+
+		<main>
+			<section class="hero" id="hero">
+				<p class="eyebrow">Notes for small teams</p>
+				<h1>Notes that link themselves.</h1>
+				<p class="lede">
+					Write in plain text. Acme Notes finds the people, projects and decisions you mention and connects
+					them, so last month's meeting is one click from today's.
+				</p>
+				<div class="hero-actions">
+					<button class="button" type="button" id="trial" data-testid="trial-button">Start a 14-day trial</button>
+					<a class="text-link" href="/pricing">See pricing</a>
+				</div>
+				<p class="trial-count" id="trial-count" aria-live="polite">No trials started from this page yet.</p>
+			</section>
+
+			<section class="features" id="features" aria-labelledby="features-title">
+				<h2 id="features-title">What it does for you</h2>
+				<div class="feature-grid">
+					<article class="feature">
+						<h3>Backlinks without effort</h3>
+						<p>Mention a project and the note shows up on that project's page, with the sentence that mentioned it.</p>
+					</article>
+					<article class="feature">
+						<h3>Decisions you can find</h3>
+						<p>Mark a line as a decision and it lands in one list per project, with who decided and when.</p>
+					</article>
+					<article class="feature">
+						<h3>Plain text, always</h3>
+						<p>Every note is a Markdown file you can export at any time. Nothing is locked in a database.</p>
+					</article>
+				</div>
+			</section>
+
+			<section class="faq" id="faq" aria-labelledby="faq-title">
+				<h2 id="faq-title">Questions</h2>
+				<details>
+					<summary>Can I import my existing notes?</summary>
+					<p>Yes. Drop a folder of Markdown files or a Notion export and Acme Notes links them on import.</p>
+				</details>
+				<details>
+					<summary>Does it work offline?</summary>
+					<p>Notes are stored on your device first and sync when you are back online.</p>
+				</details>
+				<details>
+					<summary>Who can see my notes?</summary>
+					<p>Only the people you share a space with. Links are private unless you publish them.</p>
+				</details>
+			</section>
+		</main>
+
+		<footer class="site-footer">
+			<p>Acme Notes is a sample app for the XO toolbar demo.</p>
+		</footer>
+	</body>
+</html>

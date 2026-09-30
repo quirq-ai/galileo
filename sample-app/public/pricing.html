@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Pricing · Acme Notes</title>
+		<link rel="stylesheet" href="/styles.css" />
+		<script src="/app.js" nonce="{{nonce}}" defer></script>
+	</head>
+	<body>
+		<header class="site-header">
+			<a class="brand" href="/">Acme Notes</a>
+			<nav class="site-nav" aria-label="Main">
+				<a href="/">Product</a>
+				<a href="/pricing" aria-current="page">Pricing</a>
+				<a href="/about">About</a>
+			</nav>
+			<a class="button button-small" href="/pricing" data-testid="header-cta">Start free</a>
+		</header>
+
+		<main class="page">
+			<h1>Pricing</h1>
+			<p class="lede">Every plan includes unlimited notes and Markdown export. Pay for people, not pages.</p>
+
+			<div class="plans" id="plans">
+				<article class="plan" data-testid="plan-free">
+					<h2>Free</h2>
+					<p class="price"><span class="amount">$0</span> per person</p>
+					<ul>
+						<li>Up to 3 people</li>
+						<li>Backlinks and search</li>
+						<li>7 days of history</li>
+					</ul>
+					<button class="button button-quiet" type="button">Start free</button>
+				</article>
+				<article class="plan plan-featured" data-testid="plan-team">
+					<p class="plan-badge">Most teams pick this</p>
+					<h2>Team</h2>
+					<p class="price"><span class="amount">$8</span> per person / month</p>
+					<ul>
+						<li>Unlimited people</li>
+						<li>Decision lists per project</li>
+						<li>Full history</li>
+					</ul>
+					<button class="button" type="button">Start a trial</button>
+				</article>
+				<article class="plan" data-testid="plan-business">
+					<h2>Business</h2>
+					<p class="price"><span class="amount">$15</span> per person / month</p>
+					<ul>
+						<li>Single sign-on</li>
+						<li>Audit log</li>
+						<li>Priority support</li>
+					</ul>
+					<button class="button button-quiet" type="button">Talk to us</button>
+				</article>
+			</div>
+		</main>
+
+		<footer class="site-footer">
+			<p>Acme Notes is a sample app for the XO toolbar demo.</p>
+		</footer>
+	</body>
+</html>

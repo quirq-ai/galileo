@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>galileo launcher</title>
+		<link rel="icon" href="/__xo/home/icon.svg" type="image/svg+xml" />
+		<link rel="stylesheet" href="/__xo/launcher/launcher.css" />
+		<!-- The toolbar's own design editor, served by the gateway from the xo-toolbar project. -->
+		<script src="/__xo/toolbar/designer.js" defer></script>
+		<script src="/__xo/launcher/launcher.js" defer></script>
+	</head>
+	<body>
+		<main class="wrap">
+			<header class="top">
+				<p class="brand"><a href="/" title="galileo home"><span class="mark">galileo</span></a> launcher</p>
+				<p class="muted mono" id="gateway"></p>
+			</header>
+
+			<h1>Apps on this gateway</h1>
+			<p class="lede">
+				Each app, and each version of an app, has its own address on this port, so they never share cookies,
+				storage or service workers. An app's own address serves its default version, and a path picks another:
+				<span class="mono" id="pick-example">acme.localhost/live</span> opens the live version.
+			</p>
+
+			<ul class="apps" id="apps" aria-live="polite">
+				<li class="empty">Loading…</li>
+			</ul>
+
+			<section class="card folders" id="folders-section" aria-labelledby="folders-title" hidden>
+				<h2 id="folders-title">Folders</h2>
+				<p class="muted" id="folders-summary"></p>
+				<div class="table-wrap">
+					<table class="folder-table">
+						<thead>
+							<tr><th>App</th><th>Serves</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr>
+						</thead>
+						<tbody id="folders"></tbody>
+					</table>
+				</div>
+			</section>
+
+			<section class="card design" aria-labelledby="design-title">
+				<div class="design-text">
+					<h2 id="design-title">Default toolbar</h2>
+					<p class="muted" id="design-summary">Every app uses this design until it has its own.</p>
+					<p class="hint">
+						Choose the tools, their order, where the bar docks and its color. Give one app its own design from its
+						Toolbar button, or from Customize in that app's toolbar.
+					</p>
+					<button type="button" id="edit-default">Edit the default toolbar</button>
+				</div>
+				<div class="design-preview" id="default-preview"></div>
+			</section>
+
+			<form class="card add" id="add" novalidate>
+				<h2>Add an app</h2>
+				<div class="fields">
+					<label>
+						<span>Name</span>
+						<input id="name" name="name" placeholder="docs" autocomplete="off" spellcheck="false" required />
+					</label>
+					<label class="narrow">
+						<span>Version</span>
+						<input id="version" name="version" placeholder="main" autocomplete="off" spellcheck="false" />
+					</label>
+					<label>
+						<span>Port or URL</span>
+						<input id="upstream" name="upstream" placeholder="5173" autocomplete="off" spellcheck="false" required />
+					</label>
+					<button type="submit" id="add-button">Add</button>
+				</div>
+				<p class="hint">
+					Opens at <span class="mono" id="preview-url"></span>. Adding a version to an app that exists keeps its other versions.
+				</p>
+				<p class="error" id="error" role="alert" hidden></p>
+			</form>
+		</main>
+
+		<dialog class="editor" id="editor" aria-label="Toolbar design">
+			<div class="editor-host" id="editor-host"></div>
+		</dialog>
+	</body>
+</html>

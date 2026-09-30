@@ -1,0 +1,27 @@
+{
+	"name": "galileo",
+	"version": "0.3.0",
+	"private": true,
+	"description": "The XO gateway: every app on this machine behind one port, each at its own address, with the XO toolbar carried into its pages, comments, captures and toolbar designs kept, and a home page that shows every route.",
+	"type": "module",
+	"main": "index.mjs",
+	"exports": {
+		".": "./index.mjs",
+		"./package.json": "./package.json"
+	},
+	"bin": {
+		"galileo": "src/server.mjs"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"dependencies": {
+		"xo-toolbar": "file:../xo-toolbar"
+	},
+	"scripts": {
+		"demo": "node demo.mjs",
+		"start": "node src/server.mjs",
+		"sample": "node sample-app/server.mjs",
+		"test": "node --test \"test/*.test.mjs\""
+	}
+}
