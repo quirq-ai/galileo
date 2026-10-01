@@ -1,152 +1,109 @@
 # galileo
 
-**Inspect every app on this machine, at its own address, with telescope in every page.**
+**The inspector of a space: the apps and files on this machine, one at a time, under one bar.**
 
-galileo is XO's local inspector. Give an app a name and the port it runs on
-(or a URL), and galileo answers for it at `<name>.localhost:4100`, each
-version at its own address:
+galileo keeps a list of **sources**, the things you want to look at. There are
+two kinds:
+
+| Source | Add it as | It shows |
+| --- | --- | --- |
+| a port | `5173` | the app that answers on that port of this machine |
+| files | `~/notes` or `~/out/report.html` | a folder's pages and files, or one file, read only |
+
+Each source gets an address of its own, `<name>.localhost:4100`, and opens
+under **telescope**, galileo's bar and router:
 
 ```
-acme.localhost:4100        acme, its default version
-dev.acme.localhost:4100    acme's dev server, e.g. :5173
-live.acme.localhost:4100   acme's deployment, e.g. https://acme.vercel.app
+localhost:4100/sources          the Sources page: add, open and remove sources
+localhost:4100/s/acme/pricing   the source acme, at /pricing, under the bar
 ```
-
-Every HTML page galileo serves carries **telescope**, XO's in-page bar: switch
-between apps, versions and pages, and inspect, comment on, capture, record, or
-ask an agent about the page in front of you. galileo is where you look from;
-telescope is what you look through. Apps change nothing to get it: galileo
-appends one script tag as each page streams through.
 
 ```mermaid
 flowchart LR
-  browser["Browser<br/>dev.acme.localhost:4100"] --> gw["galileo<br/>127.0.0.1:4100"]
-  gw --> dev["acme's dev server<br/>127.0.0.1:5173"]
-  gw --> live["acme's deployment<br/>acme.vercel.app"]
-  gw -.->|"each HTML page, plus one script tag: telescope"| browser
-  gw --> data[("data/<br/>comments, captures,<br/>designs, agent requests")]
+  subgraph tab["a browser tab on localhost:4100"]
+    bar["telescope<br/>the bar and router"]
+    frame["the source, in a frame<br/>acme.localhost:4100"]
+  end
+  galileo["galileo<br/>127.0.0.1:4100"]
+  app["an app on a port<br/>localhost:5173"]
+  disk["files on disk<br/>~/notes"]
+  bar -->|"the sources API"| galileo
+  frame --> galileo
+  galileo -->|proxied| app
+  galileo -->|read only| disk
+  frame -.->|"the bridge: where the page is"| bar
 ```
 
-galileo starts nothing: it routes to whatever already answers on an app's
-port. It listens on `127.0.0.1` only, and keeps what telescope makes in its
-own `data/` folder.
+The bar says which source you're on and where in it. Switch source from its
+menu, type a path, reload, or open the source in a tab of its own. As you
+click around inside a source, the bar and the address follow.
+
+galileo starts nothing: a port source shows whatever already answers there.
+It listens on `127.0.0.1` only, and only ever reads files.
 
 ## Quick start
 
 Node 20 or later, and nothing to install:
 
 ```bash
-npm start -- --target web=5173      # http://web.localhost:4100/ is whatever runs on :5173
+npm start
 ```
 
-- <http://localhost:4100/> lists every address galileo answers, live, and how
-  it works.
-- <http://localhost:4100/launcher> adds and removes apps and versions, picks
-  each app's default version, and edits telescope's design.
-- `npm run demo` puts a sample site behind galileo as two versions: see
-  [the demo](#the-demo).
+Open <http://localhost:4100/> and add a source on the Sources page: a name,
+and a port such as `5173` or a path such as `~/notes`. Sources can also be
+given when galileo starts:
 
-## Adding an app
+```bash
+npm start -- --source web=5173 --source notes=~/notes
+```
 
-An app is a name, one or more versions, and an upstream for each version: a
-port (`5173`), a `host:port`, or an `http(s)` URL.
+`npm run demo` starts a sample app and shows it, its folder of files, and this
+README as three sources.
 
-| Where | How |
-| --- | --- |
-| the launcher | a name, an optional version, and a port or URL |
-| when starting | `npm start -- --target web=5173 --target live.web=https://web.vercel.app` |
-| from a program | `POST localhost:4100/__xo/api/targets` with `{ "name": "web", "upstream": "5173" }` |
+## Sources
 
-The left side of `--target` reads like the address it creates. An app given
-without a version gets one called `main`, and its first version is its default
-until you pick another. galileo keeps the list in `data/targets.json`, so apps
-stay across restarts.
-
-## Addresses
-
-- `web.localhost:4100` is the app's default version, and
-  `live.web.localhost:4100` one version of it.
-- `web.localhost:4100/live/pricing`, as a page load, redirects to
-  `live.web.localhost:4100/pricing`.
-- Each app and version is its own origin, so they never share cookies,
-  storage, service workers or cache, and live and dev can be open side by side.
-- Everything a page loads (links, assets, API calls, redirects, hot-reload
-  sockets) stays on the version it came from, with no base path to configure.
-- Browsers resolve `*.localhost` to this machine with no DNS setup (Chrome,
-  Firefox, and Safari from macOS 26).
-- An unknown name gets a 404 page listing the apps that exist; an app that
-  isn't answering gets a page that retries every 2 seconds.
-
-## How it works
-
-1. **Route by hostname.** galileo reads the `Host` header and picks the app and
-   version. The bare host, `localhost:4100`, is galileo's own: its home page,
-   the launcher, and the only API that can add apps or change their settings.
-2. **Proxy.** Requests go to the version's upstream, and WebSocket upgrades are
-   tunnelled, so dev servers' hot reload keeps working.
-3. **Carry telescope.** HTML pages get their security headers adjusted just
-   enough, and one `<script src="/__xo/toolbar/loader.js">` appended at the
-   end. Everything else passes through untouched.
-4. **Keep what telescope makes.** telescope talks only to its own app's API
-   under `/__xo/api/` on the page's origin: comment threads, screenshots and
-   recordings, the app's telescope design, and requests for the agent.
-   telescope's server side, in `telescope/server/`, answers it and keeps
-   everything in `data/`.
-
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) follows a request through every
-part, and telescope through a page, with a diagram for each flow.
+- **A port** is an app on this machine, such as a dev server. galileo proxies
+  it, WebSockets included, so hot reload keeps working. If nothing answers
+  yet, the source shows a page that tries again every 2 seconds.
+- **Files** are a folder or a single file. A folder shows its `index.html`, or
+  else a listing; a single file shows itself alone. Text files open as
+  readable pages with a Raw link, images, video, audio and PDFs in their own
+  viewers, and HTML as it is. Hidden files (`.env`, `.git`) are never shown,
+  nothing outside the source is ever served, and nothing is ever written.
+- A source's name becomes its address, so it is lowercase letters, digits and
+  dashes. galileo keeps the list in `data/sources.json`, so sources stay
+  across restarts.
 
 ## telescope
 
-telescope lives in [telescope/](telescope/README.md), part of this repo, with
-both its halves: the bar that runs in the page, and the server side galileo
-hands its requests to. In every page it gives:
+telescope is galileo's whole page: the bar along the top and the view under
+it, which is the Sources page or one source in a frame.
 
-- a navbar (`● dev ▾ · acme ▾ · /pricing`) that opens this page on another
-  version, opens another app, or goes to another path;
-- tools for the page: inspect an element, comment, see threads, take a
-  screenshot of the page or an area, record the screen, read the page's
-  console and network errors, and ask the agent;
-- a design per app (which tools, their order, where the bar docks, its
-  accent), set in the launcher or from *Customize* in the bar.
+- **The bar**: galileo's mark (back to Sources), the source menu (ports and
+  files, each with a dot for whether it is there), the path, reload, and open
+  on its own.
+- **The router**: telescope owns the address. `/sources` is the Sources page;
+  `/s/<name>/<path>` is a source at a path. Back and Forward work across
+  sources and inside them.
+- **The bridge**: each page a source serves gets one small script appended,
+  `/__xo/bridge.js`, which tells telescope where the page is whenever that
+  changes. That's how the bar follows clicks inside a source.
 
-It mounts in a closed shadow root and runs in a hidden same-origin iframe, so
-it doesn't mix with the page's code or styles. A page can add its own tools
-with `window.__xo_toolbar.addTool`. telescope was called xo-toolbar, and its
-internal names (`/__xo/toolbar/`, `data-xo-toolbar`, `window.__xo_toolbar`,
-`data/toolbars/`) still are, so pages and saved designs keep working.
+## How it works
 
-## Where galileo is going
+1. **Route by hostname.** `localhost:4100` is galileo's own: telescope and the
+   sources API. `acme.localhost:4100` is the source acme. A name nobody added
+   gets a page listing the real ones, and never another source.
+2. **Proxy or read.** A port source is proxied to its port; a files source is
+   read from disk.
+3. **Frame.** Every response from a source may be framed only by galileo (and
+   by the source itself), so apps that refuse frames still show under the bar,
+   and no other site can frame them.
+4. **Bridge.** Each HTML page gets the bridge appended as it streams through,
+   with its security policy loosened just enough for that one script.
 
-galileo is growing into an inspector for anything on this machine, with
-telescope as the way to look:
-
-| To inspect | Status |
-| --- | --- |
-| an app on a local port | works today |
-| a deployment at a URL | works today |
-| a folder, or a single file, read-only | planned |
-| the traffic galileo carries to an app's port | planned |
-
-[docs/ROADMAP.md](docs/ROADMAP.md) has the plan, the rules it keeps, and the
-questions still open.
-
-## Inside another server
-
-`createGateway()` returns handlers that another server mounts on its own port.
-xo-client does, so XO's UI and every app share `localhost:3000`.
-
-```js
-import { createGateway } from "galileo";
-
-const gateway = createGateway({ port, addAppsIn: "Settings › Apps" });
-server.on("request", (req, res) => (gateway.owns(req) ? gateway.handle(req, res) : app(req, res)));
-server.on("upgrade", (req, socket, head) => (gateway.owns(req) ? gateway.upgrade(req, socket, head) : appUpgrade(req, socket, head)));
-```
-
-`owns(req)` claims every `*.localhost` host and `/__xo/*` on the bare host; the
-host keeps the rest. The options are in
-[docs/REFERENCE.md](docs/REFERENCE.md#as-a-library).
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) follows a request through every
+part, with diagrams.
 
 ## Settings
 
@@ -156,7 +113,7 @@ what the shell sets wins.
 | Variable | Default | Does |
 | --- | --- | --- |
 | `PORT` | `4100` | where galileo listens, on `127.0.0.1` only (`--port` wins) |
-| `XO_GATEWAY_DATA` | `data/` | where apps, threads, captures, designs and agent requests are kept |
+| `GALILEO_DATA` | `data/` | where galileo keeps its list of sources |
 
 ## The demo
 
@@ -164,43 +121,40 @@ what the shell sets wins.
 npm run demo
 ```
 
-It runs a sample site, Acme Notes, as two builds, and puts them behind galileo
-as acme's versions:
-
 | Address | What it is |
 | --- | --- |
-| <http://acme.localhost:4100/> | Acme Notes, its default version (dev), with telescope |
-| <http://live.acme.localhost:4100/> | the live build |
-| <http://acme.localhost:4100/live/pricing> | a path that picks a version: redirects to `live.acme.localhost:4100/pricing` |
-| <http://xo.localhost:4100/> | whatever runs on `:3000` |
-| <http://localhost:4173/> | the live build as its own server sends it: no telescope, and it refuses to be framed |
+| <http://localhost:4100/s/acme/> | Acme Notes, a sample app on a port, which normally refuses to be framed |
+| <http://localhost:4100/s/site/> | the same site's folder of files, read only |
+| <http://localhost:4100/s/readme/> | this README, a single file |
+| <http://localhost:4173/> | Acme Notes as its own server sends it |
 
 ## Working on galileo
 
 ```bash
-npm test        # node --test: galileo's routing, end to end and mounted mode, and telescope's page rules, bundles and schema
+npm test        # node --test: sources, page rules, files, and galileo end to end
 ```
 
 No dependencies and no build step: plain ESM JavaScript on Node's own modules,
-and plain classic scripts for telescope's browser code. The tests pass globs to
-`node --test`, which needs Node 21 or later. [AGENTS.md](AGENTS.md) has the
-rules for changing galileo, and a map of where each part lives.
+and plain scripts for telescope. The tests pass a glob to `node --test`, which
+needs Node 21 or later. [AGENTS.md](AGENTS.md) has the rules for changing
+galileo, and a map of where each part lives.
 
 ## Docs
 
 | | |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: a request, and telescope in a page, through every part, with diagrams |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | how it works: a request through every part, with diagrams |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | why it works that way, and what each choice costs |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | commands, addresses, headers, APIs, data, library options, limits |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | where it is going: files, folders and traffic, as a plan |
-| [telescope/README.md](telescope/README.md) | telescope: its tools, keys, designs, navbar and page API |
+| [docs/REFERENCE.md](docs/REFERENCE.md) | commands, addresses, routes, headers, files, data, limits |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | what v0 leaves out, and what may come next |
+| [telescope/README.md](telescope/README.md) | telescope: the bar, the router and the bridge |
 | [AGENTS.md](AGENTS.md) | the contract for agents and people changing galileo |
 
 ## Limits
 
 - Safari before macOS 26 can't resolve `*.localhost`.
-- A CSP set in a `<meta>` tag isn't adjusted, only CSP headers are.
-- An upstream that compresses HTML anyway is passed through without
-  telescope.
+- A page's bridge is blocked by a security policy set in a `<meta>` tag, since
+  only headers are adjusted; the bar then doesn't follow that page.
+- A link to another site opens in a tab of its own: the frame shows sources
+  only.
 - More in [docs/REFERENCE.md](docs/REFERENCE.md#limits).

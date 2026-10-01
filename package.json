@@ -1,8 +1,8 @@
 {
 	"name": "galileo",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"private": true,
-	"description": "The XO gateway: every app on a local port, or at a URL, behind one port at its own address, with telescope, its in-page bar, carried into its pages and what telescope makes kept on disk.",
+	"description": "The inspector of a space: ports and files on this machine as sources, each at its own address, shown one at a time under telescope, galileo's bar and router.",
 	"type": "module",
 	"main": "index.mjs",
 	"exports": {
@@ -19,6 +19,6 @@
 		"demo": "node demo.mjs",
 		"start": "node src/server.mjs",
 		"sample": "node sample-app/server.mjs",
-		"test": "node --test \"test/*.test.mjs\" \"telescope/test/*.test.mjs\""
+		"test": "node --test \"test/*.test.mjs\""
 	}
 }

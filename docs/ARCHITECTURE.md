@@ -1,436 +1,276 @@
 # How galileo works
 
-galileo is one Node.js process in front of the apps on this machine. It gives
-each app, and each version of an app, its own address on one port, routes
-every request by its hostname to the app's port or URL, and carries
-telescope, XO's in-page bar, into every HTML page it serves. It starts
-nothing: apps run however you run them.
+galileo is one Node.js process on this machine. It keeps a list of sources
+(apps on ports, and files or folders), gives each one its own address on one
+port, and serves telescope, the bar and router that shows them one at a time.
+It starts nothing and writes nothing but its own list.
 
-This page follows a request through galileo, then telescope through a page,
-then each part in turn. Why each part works the way it does is in
-[DECISIONS.md](DECISIONS.md), exact routes, headers and files are in
-[REFERENCE.md](REFERENCE.md), and what is planned is in
-[ROADMAP.md](ROADMAP.md).
+This page follows a request through galileo, then telescope through a page.
+Why each part works the way it does is in [DECISIONS.md](DECISIONS.md), exact
+routes, headers and files are in [REFERENCE.md](REFERENCE.md), and what may
+come next is in [ROADMAP.md](ROADMAP.md).
 
 - [The picture](#the-picture)
-- [A page, from request to telescope](#a-page-from-request-to-telescope)
+- [Opening a source](#opening-a-source)
+- [How a request is sorted](#how-a-request-is-sorted)
 - [What changes on the way through](#what-changes-on-the-way-through)
-- [WebSockets](#websockets)
-- [telescope in the page](#telescope-in-the-page)
-- [What telescope makes](#what-telescope-makes)
-- [Designs](#designs)
-- [Where apps come from](#where-apps-come-from)
+- [A files source](#a-files-source)
+- [telescope's router and the bridge](#telescopes-router-and-the-bridge)
+- [The Sources page](#the-sources-page)
 - [Trust boundaries](#trust-boundaries)
 - [What galileo keeps](#what-galileo-keeps)
-- [Mounted in another server](#mounted-in-another-server)
 
 ## The picture
 
 ```mermaid
 flowchart LR
-  browser["Browser tab<br/>dev.acme.localhost:4100"]
-  subgraph gw["galileo, one process on 127.0.0.1:4100"]
-    route["routeForHost<br/>which app, which version"]
-    proxy["proxy and tunnel<br/>one tag appended to pages"]
-    tele["telescope's routes<br/>bundles, threads, captures,<br/>designs, agent requests"]
-    own["the bare host<br/>home, launcher, admin API"]
+  subgraph tab["a browser tab on localhost:4100"]
+    bar["telescope<br/>the bar and router"]
+    frame["a frame<br/>acme.localhost:4100/pricing"]
   end
-  dev["acme's dev server<br/>127.0.0.1:5173"]
-  live["acme's deployment<br/>acme.vercel.app"]
-  made[("data/<br/>what telescope makes")]
-  apps[("data/targets.json<br/>the registry")]
-  browser --> route
-  route -->|"a page or an asset"| proxy
-  route -->|"/__xo/* on an app's host"| tele
+  subgraph galileo["galileo, 127.0.0.1:4100"]
+    route["routeForHost<br/>which source"]
+    own["galileo's own host<br/>telescope, the sources API"]
+    proxy["proxy and tunnel"]
+    files["files, read only"]
+  end
+  app["an app<br/>localhost:5173"]
+  disk["a folder or a file<br/>~/notes"]
+  list[("data/sources.json")]
+  bar --> route
+  frame --> route
   route -->|"localhost:4100"| own
-  proxy --> dev
-  proxy --> live
-  tele --> made
-  own --> apps
+  route -->|"a port source"| proxy
+  route -->|"a files source"| files
+  proxy --> app
+  files --> disk
+  own --> list
+  frame -.->|"the bridge: where the page is"| bar
 ```
 
 | Part | File | Job |
 | --- | --- | --- |
-| Routing and registry | `src/targets.mjs` | turns a `Host` header into an app and a version; keeps the apps and saves them to `data/targets.json` |
-| Proxy, tunnel and admin API | `src/server.mjs` | forwards requests and WebSocket upgrades to the version's upstream; the waiting and 404 pages; the bare host's pages; galileo's own `/__xo/*` (health, the list of apps, the admin API), handing the rest of `/__xo/*` to telescope; the CLI |
-| Page rules | `telescope/server/inject.mjs` | which responses are pages, how their headers change, and the tag |
-| telescope's routes | `telescope/server/api.mjs` | `createTelescope`: its bundles, captures, threads, designs and agent requests under `/__xo/`, on app hosts and the bare host |
-| telescope's store | `telescope/server/store.mjs`, `uploads.mjs` | threads, designs, agent requests and captures on disk |
-| telescope in the page | `telescope/src/`, `layout.mjs`, `index.mjs` | the bar's scripts, the design schema, and the bundles made from them |
-| Pages of its own | `home/`, `launcher/` | the home page and the launcher on the bare host |
+| Sources | `src/sources.mjs` | names, ports and paths, which source a `Host` means, the list and how each source is right now |
+| Server | `src/server.mjs` | `createGalileo`: routing by host, telescope and the sources API, the proxy and tunnel, the pages galileo makes on a source's address, the CLI |
+| Page rules | `src/inject.mjs` | which responses get the bridge, framing by galileo alone, a page's policy loosened for the bridge |
+| Files | `src/files.mjs` | a files source, read only: safe paths, files with their types and ranges, file pages, folder listings |
+| telescope | `telescope/` | the page: the bar and router (`telescope.js`), its styles, and the bridge (`bridge.js`) |
 
-## A page, from request to telescope
+## Opening a source
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant B as Browser
-  box galileo on 127.0.0.1:4100
-    participant G as routing and proxy
-    participant T as telescope's routes
-  end
-  participant A as acme dev server
-  B->>G: GET /pricing, Host dev.acme.localhost:4100
-  G->>G: routeForHost finds acme, version dev
-  G->>A: GET /pricing, Host 127.0.0.1:4174, accept-encoding identity
-  A-->>G: 200 text/html, with a CSP and X-Frame-Options
-  G->>G: shouldInject says it is a page, so rewrite headers and make a nonce
-  G-->>B: the rewritten headers, then the body as it streams
-  G-->>B: after the last byte, the loader tag
-  B->>G: GET /__xo/toolbar/loader.js, same origin
-  G->>T: handleApp
-  T-->>B: the loader, which builds the bar and loads app.js in a hidden frame
-  B->>G: GET /__xo/api/toolbar and /__xo/api/threads?page=/pricing
-  G->>T: handleApp, as acme, version dev
-  T-->>B: acme's design, and this page's threads
+  participant T as telescope, on localhost:4100
+  participant F as its frame, on acme.localhost:4100
+  participant G as galileo
+  participant A as the app on :5173
+  T->>T: the address is /s/acme/pricing, so show acme at /pricing
+  T->>F: a frame of acme.localhost:4100/pricing
+  F->>G: GET /pricing, Host acme.localhost:4100
+  G->>G: routeForHost finds acme, a port source
+  G->>A: GET /pricing, Host localhost:5173, accept-encoding identity
+  A-->>G: 200 text/html, with X-Frame-Options DENY and a strict CSP
+  G-->>F: framed by galileo alone, the policy loosened for one script, the body as it streams
+  G-->>F: after the last byte, the bridge's tag
+  F->>G: GET /__xo/bridge.js
+  F-->>T: postMessage, where: /pricing and the page's title
+  T->>T: the bar, the tab's title and the address follow
 ```
 
-1. **Route.** `routeForHost` reads the `Host` header. `localhost` is galileo's
-   own; `acme.localhost` is acme's default version; `dev.acme.localhost` is its
-   dev version. A name nobody registered gets a 404 page listing the real ones,
-   and never falls through to another app.
-2. **Proxy.** The request goes to the version's upstream with the upstream's
-   own `Host`, no hop-by-hop headers, and `accept-encoding: identity`, so the
-   HTML comes back uncompressed.
-3. **Decide.** `shouldInject` says whether the response is a page: a `GET` for
-   a document, answered with uncompressed `text/html`, not opted out.
-   Anything else (scripts, images, JSON, streams) is piped through untouched.
-4. **Rewrite.** A page's headers are adjusted just enough for the tag to run
-   and for XO to frame the page: `X-Frame-Options` and `frame-ancestors` go, a
-   nonce or `'self'` is added where the policy needs it. Redirects and cookies
-   are rewritten to stay on galileo's host.
-5. **Append.** The body streams through a transform that adds one
-   `<script src="/__xo/toolbar/loader.js">` after the last byte, so the page
-   renders as fast as it would without galileo.
-6. **Load telescope.** The loader comes from the page's own origin, so the
-   page's CSP admits it with `'self'` or the nonce. It builds the bar and runs
-   the rest of telescope in a hidden frame (see
-   [telescope in the page](#telescope-in-the-page)), which loads the app's
-   design and this page's threads. The navbar loads the list of apps when one
-   of its menus opens. All of it goes to `/__xo/` on the same origin, which
-   galileo scopes to that app.
+1. **Route.** `routeForHost` reads the `Host` header: `localhost` is galileo's
+   own, `acme.localhost` is the source acme, and a name nobody added gets a page
+   listing the real ones.
+2. **Proxy.** A port source gets the request with its own `Host`, no hop-by-hop
+   headers, and `accept-encoding: identity`, so a page comes back uncompressed.
+3. **Frame.** `X-Frame-Options` goes, the page's own `frame-ancestors` goes, and
+   galileo adds a policy that lets only its own origins (and the source itself)
+   frame the response.
+4. **Bridge.** A page load answered with HTML gets the bridge's tag appended
+   after its last byte, as it streams, and its `script-src` gains a nonce or
+   `'self'` for that one script.
+5. **Follow.** The bridge posts where the page is; telescope keeps the bar and
+   its own address in step.
 
-If the upstream doesn't answer, a "Waiting for acme" page retries every 2
-seconds, and still carries telescope. WebSocket upgrades (hot reload) are
-tunnelled raw to the same version; any other upgrade is closed.
+WebSocket upgrades on a port source's address (hot reload) are tunnelled raw
+to the port, with its own `Host`, when they come from the source's own pages,
+galileo's, or no page at all; any other upgrade is refused. If nothing
+answers on the port, page loads get a "Waiting for acme" page that tries again
+every 2 seconds.
 
-### How a request is sorted
+## How a request is sorted
 
 ```mermaid
 flowchart TD
   req["a request"] --> host{"its Host"}
-  host -->|"localhost or 127.0.0.1"| bare["galileo's own<br/>home, launcher, admin API"]
-  host -->|"name.localhost or version.name.localhost"| known{"a registered app and version?"}
-  known -->|no| missing["404 page listing the real apps or versions"]
-  known -->|yes| where{"its path"}
-  where -->|"/__xo/*"| xo["health and the app list,<br/>else telescope's routes"]
-  where -->|"/version/... on the app's own host, a page load"| pick["302 to that version's host"]
-  where -->|"anything else"| proxy["proxy to the version's upstream,<br/>carrying telescope into pages"]
-  proxy --> down{"the upstream answers?"}
-  down -->|yes| page["the app's response"]
-  down -->|no| wait["Waiting page, retries every 2 s"]
+  host -->|"localhost or 127.0.0.1"| own{"its path"}
+  own -->|"/, /sources, /s/..."| tel["telescope's page"]
+  own -->|"/__xo/telescope/*"| assets["telescope's files"]
+  own -->|"/__xo/api/sources"| api["the sources API,<br/>galileo's own pages only"]
+  host -->|"anything else"| foreign["421, and nothing else"]
+  host -->|"name.localhost"| known{"a source?"}
+  known -->|no| missing["a page listing the real sources"]
+  known -->|yes| path{"its path"}
+  path -->|"/__xo/bridge.js"| bridge["the bridge"]
+  path -->|"anything else, port"| proxy["proxied to the port"]
+  path -->|"anything else, files"| files["read from disk"]
+  proxy --> up{"anything answers?"}
+  up -->|yes| page["the app's response"]
+  up -->|no| wait["Waiting page, every 2 s"]
 ```
 
 ## What changes on the way through
 
-galileo changes as little as it can. Everything here is a pure function in
-`telescope/server/inject.mjs`, tested without a server.
+Everything here is a pure function in `src/inject.mjs`, tested without a
+server.
 
-**To the upstream:**
+**To a port:** its own `Host` (`localhost:<port>`), `x-forwarded-host` with
+the address the browser used, `accept-encoding: identity`, and no hop-by-hop
+headers.
 
-- `Host` becomes the upstream's own. `x-forwarded-host` keeps the address the
-  browser used, and `x-forwarded-proto` says `http`.
-- `accept-encoding: identity`, so a page comes back uncompressed and the tag
-  can be appended without decompressing it.
-- Hop-by-hop headers and `x-xo-skip-toolbar` are dropped.
-- A `*.vercel.app` upstream also gets `x-vercel-skip-toolbar: 1`, so telescope
-  stands in for Vercel's toolbar.
+**Back to the browser, every response:** no hop-by-hop headers;
+`X-Frame-Options` removed; each policy's `frame-ancestors` removed and
+galileo's own added; a `Location` that points at the port rewritten to the
+source's address; `Set-Cookie` without `Domain=`.
 
-**Back to the browser:**
-
-- Hop-by-hop headers are dropped.
-- A `Location` that points at the upstream's origin is rewritten to the app's
-  host on galileo, and `Set-Cookie` loses its `Domain=`, so redirects and
-  cookies stay on galileo's host.
-- Only on a page: `X-Frame-Options` goes, each Content Security Policy is
-  rewritten (below), `Content-Length`, `ETag` and `Last-Modified` go because
-  the body grows by one tag, and `x-xo-toolbar: injected` says telescope was
-  added.
-
-**A page's Content Security Policy**, enforced or report-only:
+**Only on a page that gets the bridge:** `Content-Length`, `ETag` and
+`Last-Modified` removed, since the body grows by one tag; `x-galileo-bridge:
+added`; and each policy's scripts loosened just enough:
 
 ```mermaid
 flowchart TD
-  policy["a page's CSP header"] --> fa["frame-ancestors is dropped"]
-  fa --> copy["where only default-src covers script-src,<br/>connect-src, img-src or media-src,<br/>default-src is copied into that directive"]
-  copy --> script{"script-src trusts a nonce, a hash<br/>or 'strict-dynamic', or is 'none'?"}
-  script -->|yes| nonce["galileo's nonce is added,<br/>and the tag carries it"]
-  script -->|no| hasSelf{"it lists 'self' or *?"}
-  hasSelf -->|yes| keep["left as it is"]
-  hasSelf -->|no| addSelf["'self' is added:<br/>the loader is same-origin"]
-  copy --> others["connect-src, img-src, media-src:<br/>'self' added unless 'self' or * is there"]
+  policy["a page's CSP, enforced or report-only"] --> copy["no script-src? default-src<br/>is copied into one, never widened"]
+  copy --> trusts{"script-src trusts a nonce,<br/>a hash or 'strict-dynamic',<br/>or allows nothing?"}
+  trusts -->|yes| nonce["galileo's nonce is added,<br/>and the tag carries it"]
+  trusts -->|no| self{"it lists 'self' or *?"}
+  self -->|yes| keep["left as it is"]
+  self -->|no| add["'self' is added:<br/>the bridge is same-origin"]
 ```
 
-A policy that relies on `'unsafe-inline'` takes the "no" branch and never
-gets a nonce: browsers ignore `'unsafe-inline'` once a nonce is present, which
-would switch the page's own inline scripts off. `default-src` itself is never
-widened, since it also governs styles, fonts and frames.
+A policy that relies on `'unsafe-inline'` takes the "no" branch and never gets
+a nonce: browsers ignore `'unsafe-inline'` once a nonce is present, which would
+switch the page's own inline scripts off.
 
-## WebSockets
+## A files source
 
 ```mermaid
-sequenceDiagram
-  participant B as Browser
-  participant G as galileo
-  participant A as acme dev server
-  B->>G: GET /hmr, Upgrade websocket, Host dev.acme.localhost:4100
-  G->>G: routeForHost finds acme, version dev, and the path isn't under /__xo/
-  G->>A: opens a socket (TLS for an https upstream), then sends the same request line and headers with A's Host
-  A-->>B: 101 Switching Protocols, through galileo
-  B->>A: frames, piped through galileo untouched
-  A->>B: frames, piped through galileo untouched
-  Note over B,A: an upgrade on galileo's own host, under /__xo/, or for an unknown name is closed
+flowchart TD
+  req["GET notes.localhost:4100/drafts/plan.md"] --> method{"GET or HEAD?"}
+  method -->|no| no["405: files are read only"]
+  method -->|yes| safe{"no hidden name, and inside<br/>the source once symlinks<br/>are followed?"}
+  safe -->|no| nf["404"]
+  safe -->|yes| what{"what is there?"}
+  what -->|"a folder"| index{"an index.html?"}
+  index -->|yes| html["the file, with the bridge<br/>on a page load"]
+  index -->|no| listing["a listing galileo makes,<br/>hidden names left out"]
+  what -->|"an HTML file"| html
+  what -->|"any other file"| load{"a page load,<br/>without ?raw?"}
+  load -->|yes| view["a page that shows the file:<br/>text, image, video, audio, PDF"]
+  load -->|no| raw["the file itself,<br/>its type, byte ranges"]
 ```
 
-Hot reload keeps working because the socket reaches the same version the page
-came from, on that version's own host.
+- A single file is its own source: it answers at `/`, and no other path does.
+- The pages galileo makes (listings, file pages, waiting and missing pages)
+  carry the bridge too, under a strict policy of their own, so the bar follows
+  every step through a folder.
+- A file's type comes from its extension; a file without one is shown as text
+  when it reads as text.
 
-## telescope in the page
-
-telescope has two halves, both in `telescope/`. Its server side
-(`telescope/server/`) is made once by galileo with
-`createTelescope({ dataDir })`, which then gets every `/__xo/` request that
-isn't galileo's own. Its page side is plain scripts in `telescope/src/`,
-joined into three bundles (`loader.js`, `app.js`, `designer.js`) by
-`telescope/index.mjs` on each request, with no build step. telescope was
-called xo-toolbar, and its wire names still are (`/__xo/toolbar/*`,
-`data-xo-toolbar`, `window.__xo_toolbar`, `data/toolbars/`), so pages, hosts
-and saved designs keep working.
-
-In the page, telescope keeps to itself. Its UI sits in a closed shadow root,
-and its code runs in a hidden iframe that shares the page's origin but not its
-globals, so the page's styles and scripts don't break it and its own don't
-leak out.
-
-```mermaid
-flowchart LR
-  subgraph pg["acme's page, on acme.localhost:4100"]
-    direction LR
-    tag["the tag galileo appended"]
-    log["the page's log:<br/>console errors and warnings,<br/>errors, failed requests,<br/>CSP blocks"]
-    subgraph el["the xo-toolbar element, on html"]
-      subgraph sr["closed shadow root"]
-        frame["hidden iframe, same origin:<br/>app.js, its own globals"]
-        bar["the bar, menus, panels,<br/>pins, the capture review"]
-      end
-    end
-    dom["the page's own DOM,<br/>styles and scripts"]
-  end
-  api["telescope's routes,<br/>/__xo/api/* on this origin"]
-  tag -->|"loader.js builds it"| el
-  log --> frame
-  frame -->|"draws into"| bar
-  frame -->|"reads and measures"| dom
-  frame -->|"fetch, same origin"| api
-```
-
-```mermaid
-sequenceDiagram
-  participant P as the page
-  participant L as loader.js
-  participant F as app.js, in the hidden frame
-  participant G as galileo
-  P->>L: runs the appended tag, async
-  L->>L: reads its tag: the app, its version and versions, the nonce
-  L->>L: shows only on explicit opt-in or a localhost host, and never with a __xo_toolbar=0 cookie
-  L->>L: starts the page's log
-  L->>P: on DOMContentLoaded, appends xo-toolbar with a closed shadow root
-  L->>F: a srcdoc frame whose one script is /__xo/toolbar/app.js, with the same nonce
-  F->>G: GET /__xo/toolbar/app.js
-  L->>F: initXoToolbar, with the shadow root, the page and the log
-  F->>G: GET /__xo/api/toolbar and /__xo/api/threads?page=/pricing
-  F->>P: draws the bar and the pins, then fires xo-toolbar:ready
-  Note over F,P: every 500 ms it keeps the bar attached, follows route changes, and loads a new page's threads
-```
-
-- The log starts when the loader runs, at the end of the page. Failed
-  requests come from the page's resource timings, including those made before
-  the loader ran, so `fetch` is never wrapped.
-- The navbar (`● dev ▾ · acme ▾ · /pricing`) reads the list of apps from
-  `/__xo/api/targets` each time one of its menus opens. Every switch of app or
-  version is a page load on another origin, since each app and version is
-  one.
-- A page can add its own tools with `window.__xo_toolbar.addTool`, before or
-  after telescope boots; they are never saved into the design.
-- [telescope/README.md](../telescope/README.md) has the tools, keys, navbar
-  and page API.
-
-## What telescope makes
-
-Everything telescope makes belongs to the app, and is kept by its server side
-in `data/`. Each route answers only the app's own origin, and only about that
-app.
-
-### Comments
+## telescope's router and the bridge
 
 ```mermaid
 sequenceDiagram
   participant U as Person
   participant T as telescope
-  participant G as telescope's routes
-  participant D as data/threads.json
-  U->>T: Comment, then a click on an element
-  T->>T: XoNodeId.build: selectors for the element, plus its tag and opening text
-  U->>T: the comment, then Enter
-  T->>G: POST /__xo/api/threads with nodeId, anchor, page and text
-  G->>D: a thread for acme, with the version it was started on
-  Note over T,D: later: a reload, a rebuild, or another version of acme
-  T->>G: GET /__xo/api/threads?page=/pricing
-  G-->>T: acme's threads for this page
-  T->>T: each thread finds its element by its selectors in turn, then by its text, else says "Element not found"
+  participant F as the frame
+  U->>F: clicks Pricing inside the app
+  F->>F: the frame loads /pricing, and the tab's history gains an entry
+  F-->>T: the bridge: where, /pricing
+  T->>T: replaces its own address with /s/acme/pricing
+  U->>T: Back
+  T-->>F: the browser takes the frame back to /
+  F-->>T: the bridge: where, /
+  T->>T: replaces its address with /s/acme/
+  U->>T: types /about in the path, Enter
+  T->>T: adds /s/acme/about to history
+  T->>F: location.replace to /about, with no entry of its own
+  U->>T: picks site from the source menu
+  T->>T: adds /s/site/ to history
+  T->>F: location.replace to site.localhost:4100/, the same frame
 ```
 
-A comment with no element is about the whole page. Replies, resolving and
-deleting go to `/__xo/api/threads/:id`, and only from the app that owns the
-thread.
+- telescope adds a history entry only for what it does itself: switching
+  source, typing a path, opening the Sources page. Clicks inside a frame add the
+  frame's own entries, and telescope only follows them.
+- Every source is shown in the same frame, sent from place to place with
+  `location.replace`. A frame thrown away would leave its steps in the tab's
+  history, each a Back press that does nothing.
+- A message counts only from telescope's current frame, and only from a
+  source's origin.
+- The bridge never wraps the page's functions; it looks at the address a few
+  times a second, and when a page restored by Back shows again.
 
-### Captures
+## The Sources page
 
 ```mermaid
 flowchart LR
-  shot["Screenshot, Area,<br/>or one element"] --> review["the review:<br/>mark it up, add a note"]
-  rec["Record,<br/>up to 5 minutes"] --> saved["POST /__xo/api/uploads<br/>as soon as it stops"] --> review
-  review -->|"Ask the agent"| up1["POST /__xo/api/uploads,<br/>if not yet"] --> agent["POST /__xo/api/agent<br/>with the upload's id"]
-  review -->|"Comment"| up2["POST /__xo/api/uploads,<br/>if not yet"] --> thread["POST /__xo/api/threads<br/>with the upload's id"]
-  review -->|"Copy or Download"| local["stays in the browser"]
-  review -->|"Discard"| gone["DELETE /__xo/api/uploads/:id,<br/>if it was uploaded"]
+  page["the Sources page<br/>on localhost:4100"] -->|"GET /__xo/api/sources,<br/>every 5 s while shown"| api["the sources API"]
+  page -->|"POST { name, location }"| api
+  page -->|"DELETE /__xo/api/sources/:name"| api
+  api --> list[("data/sources.json")]
+  api -->|"is it there?"| probe["a port: HEAD / within 600 ms<br/>files: a file, a folder, or gone"]
 ```
 
-Captures use the Screen Capture API, so they show the tab's real rendering.
-An upload is kept in `data/uploads/<app>/` and served back on the app's own
-host at `/__xo/uploads/<file>`, with byte ranges so recordings can seek. Pages
-get an upload's id and address, never where it sits on disk.
-
-### Requests for the agent
-
-```mermaid
-flowchart LR
-  from["telescope: an element's card,<br/>a capture's review, the logs panel,<br/>a thread, a prompt tool,<br/>or a page's own tool"] --> post["POST /__xo/api/agent<br/>ask, page, element, attachments,<br/>logs, environment"]
-  post --> check["telescope's routes:<br/>same origin only, attachments must be<br/>this app's uploads, text cut to size"]
-  check --> jsonl[("data/agent-requests.jsonl<br/>one line each,<br/>captures as file paths")]
-  check --> printed["a line in galileo's log"]
-  jsonl -.->|"not yet"| runtime["the XO runtime:<br/>reads a request, confirms it,<br/>runs a turn"]
-```
-
-galileo hands requests off and never runs one. The file is the hand-off
-point; nothing reads it yet.
-
-## Designs
-
-A design says which tools the bar shows, in what order, where it docks, its
-labels and its accent. Which one an app gets:
-
-```mermaid
-flowchart TD
-  get["GET /__xo/api/toolbar<br/>on acme's host"] --> own{"data/toolbars/acme.json?"}
-  own -->|yes| app["acme's own design<br/>source: app"]
-  own -->|no| dflt{"data/toolbars/_default.json?"}
-  dflt -->|yes| gw["galileo's default<br/>source: gateway"]
-  dflt -->|no| builtin["telescope's built-in design<br/>source: built-in"]
-```
-
-Who can change one:
-
-```mermaid
-flowchart LR
-  bar["Customize, or dragging the bar,<br/>in one of acme's pages"] -->|"PUT /__xo/api/toolbar"| acme[("data/toolbars/acme.json")]
-  launcher["the launcher,<br/>on localhost:4100"] -->|"PUT /__xo/api/toolbars/acme"| acme
-  launcher -->|"PUT /__xo/api/toolbars/_default"| shared[("data/toolbars/_default.json")]
-```
-
-An app's page can change only that app's design; only the launcher can change
-another app's, or the default. Every design passes telescope's schema
-(`normalizeLayout` in `telescope/layout.mjs`) when it is saved and when it is
-read, so a hand-edited file can't break the bar.
-
-## Where apps come from
-
-```mermaid
-flowchart LR
-  flags["--target flags<br/>at start"] --> reg["the registry"]
-  launcher["the launcher<br/>localhost:4100/launcher"] --> api["admin API<br/>POST /__xo/api/targets"]
-  host["a host's own UI<br/>xo-client's Settings › Apps"] --> api
-  api --> reg
-  reg --> file[("data/targets.json")]
-  reg --> route["routeForHost"]
-```
-
-- An app is a name, versions, and an upstream per version: a port, a
-  `host:port`, or an `http(s)` URL.
-- `--target` flags add apps at start; the admin API adds, changes and removes
-  them while galileo runs. The launcher, and hosts such as xo-client, use that
-  API.
-- The registry saves every change to `data/targets.json` (a temporary file,
-  then a rename) and loads it at start. On a clash the flags win, and a default
-  version chosen later is kept.
-- galileo only routes: whatever serves the port has to be running already.
+- `location` is a port (`5173`, `localhost:5173`) or a full path (`~/notes`,
+  `/Users/me/notes`); a relative path is refused, since galileo's own folder
+  means nothing to the person typing.
+- Adding a name that exists points it somewhere else. Removing a source
+  removes only galileo's entry: nothing on disk changes.
 
 ## Trust boundaries
 
 ```mermaid
 flowchart LR
-  subgraph bare["localhost:4100, where no app code runs"]
-    home["home page"]
-    launcher["launcher"]
-    admin["admin API<br/>add and remove apps and versions,<br/>any app's design"]
+  subgraph own["localhost:4100, where no source runs"]
+    tel["telescope"]
+    api["the sources API<br/>add and remove sources"]
   end
-  subgraph appHost["acme.localhost:4100, acme's own origin"]
-    page["acme's pages, with telescope"]
-    api["acme's API<br/>its threads, captures, design,<br/>agent requests, the list of apps"]
+  subgraph src["acme.localhost:4100, acme's own origin"]
+    page["acme's pages, with the bridge"]
   end
-  launcher --> admin
-  page --> api
+  tel --> api
+  page -.->|"postMessage only"| tel
 ```
 
-- galileo listens on `127.0.0.1` only.
-- The bare host is never proxied, so no app code runs there. It is the only
-  origin that can change the set of apps or any app's design. Its API takes
-  same-origin requests only, and changes must be JSON, so a form on another
-  site can't post one.
-- Each app's API answers only that app's own origin, and only about that app.
-  telescope runs inside the app's page, so whatever telescope may do, the
-  app may do too; nothing there reaches another app or the set of apps.
-- Uploads come back to pages without their place on disk; only the agent
-  request log records file paths.
+- galileo listens on `127.0.0.1` only, and a host that is neither galileo's
+  nor under `.localhost` gets `421` and nothing else, so a page elsewhere that
+  points its own name at this machine (DNS rebinding) learns nothing.
+- No source is ever served on galileo's own host, so no source's code runs
+  there. The sources API answers galileo's own pages only (`Sec-Fetch-Site`
+  `same-origin`, or none as from `curl`), and changes must be JSON, so a form
+  on another site can't post one.
+- Each source is its own origin, so sources never share cookies or storage
+  with each other or with telescope. A source's pages can't reach the API:
+  `acme.localhost` and `localhost` are different sites, so their requests are
+  `cross-site`, and refused.
+- Only galileo's own origins, and the source itself, may frame a source or
+  open its WebSockets, so another site can't frame one or reach its hot-reload
+  socket, and what the bridge posts reaches telescope only.
+- A framed source may go fullscreen and write to the clipboard, nothing more.
+  A browser keeps a permission given in a frame for the top page's origin, so
+  the camera granted to one source would be granted to all of them.
+- A files source serves nothing outside itself and nothing hidden, once
+  symlinks are followed: a link with an ordinary name to `.env` is refused
+  like `.env`.
+- telescope builds everything it shows with text nodes, under a policy that
+  allows scripts and styles from galileo's own host only, and frames only
+  `*.localhost` on galileo's port.
 
 ## What galileo keeps
 
 ```
-data/targets.json            the apps and their versions
-data/threads.json            comment threads, per app and page
-data/agent-requests.jsonl    requests for the agent, one per line, with capture paths
-data/toolbars/_default.json  the default telescope design
-data/toolbars/<app>.json     an app's own design
-data/uploads/<app>/          screenshots and recordings
+data/sources.json    the sources: { "sources": [{ "name", "type": "port", "port" } or { "name", "type": "files", "path" }] }
 ```
 
-Everything belongs to an app, not a version: threads, captures and designs are
-shared by all of an app's versions, and each thread records the version it was
-started on. Files are rewritten whole through a temporary file and a rename,
-and one galileo process owns a data folder.
-
-## Mounted in another server
-
-```mermaid
-flowchart LR
-  browser["Browser"] --> host["xo-client's server.mjs<br/>127.0.0.1:3000"]
-  host --> owns{"gateway.owns(req)"}
-  owns -->|"*.localhost, or /__xo/* on localhost"| gw["galileo<br/>handle and upgrade"]
-  owns -->|"everything else"| ui["Next.js<br/>the XO UI"]
-```
-
-`createGateway()` returns the handlers without listening, so another server can
-share its port. xo-client does: `localhost:3000` is XO's UI, which manages apps
-in Settings › Apps through the admin API, and every `*.localhost:3000` address
-is galileo's. The host keeps the bare host, so galileo's home page and launcher
-aren't shown there.
+That is all. It is rewritten whole through a temporary file and a rename, and
+one galileo process owns a data folder.

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>galileo</title>
+		<meta name="description" content="galileo, the inspector of a space: ports and files on this machine, one at a time under telescope's bar." />
+		<link rel="icon" href="/__xo/telescope/icon.svg" type="image/svg+xml" />
+		<link rel="stylesheet" href="/__xo/telescope/telescope.css" />
+		<script src="/__xo/telescope/telescope.js" defer></script>
+	</head>
+	<body>
+		<header class="bar" aria-label="telescope">
+			<a class="brand" href="/sources" data-route title="galileo: the Sources page">
+				<img src="/__xo/telescope/icon.svg" alt="" width="22" height="22" />
+				<span>galileo</span>
+			</a>
+
+			<div class="where">
+				<button class="switcher" id="switcher" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menu" disabled>
+					<span class="dot" id="switcher-dot" aria-hidden="true"></span>
+					<span class="switcher-name" id="switcher-name">Sources</span>
+					<svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 6.5 8 10l3.5-3.5" /></svg>
+				</button>
+				<form class="path-form" id="path-form" autocomplete="off">
+					<input
+						class="path"
+						id="path"
+						type="text"
+						spellcheck="false"
+						autocapitalize="off"
+						aria-label="Path in this source: type one and press Enter"
+						placeholder="/"
+						disabled
+					/>
+				</form>
+			</div>
+
+			<div class="actions">
+				<button class="icon" id="reload" type="button" title="Reload this source" aria-label="Reload this source" disabled>
+					<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3" /></svg>
+				</button>
+				<a class="icon" id="open" target="_blank" rel="noopener" title="Open this source in a tab of its own" aria-label="Open this source in a tab of its own" aria-disabled="true">
+					<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3H13v3.5M13 3 7.5 8.5M11 9.5V13H3V5h3.5" /></svg>
+				</a>
+				<a class="sources-link" href="/sources" data-route>Sources</a>
+			</div>
+
+			<div class="menu" id="menu" role="menu" aria-label="Sources" hidden></div>
+		</header>
+
+		<main class="view" id="view">
+			<section class="sources-page" id="sources-page" aria-labelledby="sources-title" hidden>
+				<div class="page">
+					<h1 id="sources-title">Sources</h1>
+					<p class="lede">
+						What galileo inspects: apps on ports of this machine, and files or folders on it. Each source gets an address of
+						its own and opens here, under telescope's bar.
+					</p>
+
+					<form class="add" id="add" novalidate>
+						<label class="field">
+							<span>Name</span>
+							<input id="add-name" name="name" placeholder="notes" autocomplete="off" spellcheck="false" required />
+						</label>
+						<label class="field grow">
+							<span>Port or path</span>
+							<input id="add-location" name="location" placeholder="5173, or ~/notes" autocomplete="off" spellcheck="false" required />
+						</label>
+						<button type="submit" id="add-button">Add</button>
+						<p class="hint" id="add-hint">A number is a port on this machine. A path is a file or a folder, which galileo only reads.</p>
+						<p class="error" id="add-error" role="alert" hidden></p>
+					</form>
+
+					<section class="group" aria-labelledby="ports-title">
+						<h2 id="ports-title">Ports</h2>
+						<ul class="list" id="ports"></ul>
+					</section>
+					<section class="group" aria-labelledby="files-title">
+						<h2 id="files-title">Files</h2>
+						<ul class="list" id="files"></ul>
+					</section>
+				</div>
+			</section>
+		</main>
+	</body>
+</html>

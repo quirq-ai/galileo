@@ -1,38 +1,29 @@
 #!/usr/bin/env node
 /**
- * galileo, the XO gateway: a local reverse proxy in front of several apps that
- * carries telescope, XO's in-page bar (in telescope/), into every HTML page it
- * serves, the way Vercel's edge carries its toolbar into preview deployments.
+ * galileo, the inspector of a space. It keeps a list of sources (apps on
+ * ports of this machine, and files or folders on it), gives each its own
+ * address, and serves telescope, the bar and router that shows them one at a
+ * time.
  *
- *   localhost:4100               home: what galileo routes now, and how it works
- *   localhost:4100/launcher      the launcher: apps, versions, telescope designs
- *   acme.localhost:4100      ──▶ acme's default version
- *   dev.acme.localhost:4100  ──▶ http://localhost:5173   (acme's dev version)
- *   live.acme.localhost:4100 ──▶ https://acme.vercel.app (acme's live version)
- *   acme.localhost:4100/dev/…  ─▶ 302 to dev.acme.localhost:4100/…
+ *   localhost:4100               telescope: the Sources page, and one source under the bar
+ *   localhost:4100/s/acme/…      telescope showing the source acme, at a path
+ *   acme.localhost:4100      ──▶ localhost:5173   (a port, proxied)
+ *   notes.localhost:4100     ──▶ ~/notes          (files, read only)
  *
- * Each app and each version is reached by name, so each is its own origin and
- * they never share cookies, storage or service workers. For an app's hosts:
+ * On a source's own address:
  *
- *   /__xo/*            answered here: telescope's files and the app's API
- *   WebSocket upgrade  tunnelled to that version (dev-server hot reload)
- *   anything else      proxied to that version; HTML pages get the loader tag appended
+ *   /__xo/bridge.js     telescope's bridge, which each HTML page loads
+ *   WebSocket upgrade   tunnelled to a port (dev-server hot reload)
+ *   anything else       the source: proxied to its port, or read from disk
  *
- *   node src/server.mjs --target dev.acme=5173 --target live.acme=https://acme.vercel.app --port 4100
+ * Only galileo may frame a source, and each HTML page gets the bridge
+ * appended, which tells telescope where the page is. galileo starts nothing:
+ * whatever serves a port has to be running already.
  *
- * It runs on its own, or mounted in another server that shares its port, as
- * xo-client does: that server passes every request `owns(req)` claims to
- * `handle`, and every such WebSocket upgrade to `upgrade`, and answers the
- * rest itself. The bare host is then the other app's, except `/__xo/*`.
- *
- * Apps are names for a local port or a URL, added on the command line, in the
- * launcher, or through its API, and kept in `data/targets.json`. galileo
- * starts nothing: it routes to whatever already answers there.
+ *   node src/server.mjs --source acme=5173 --source notes=~/notes --port 4100
  */
 import http from "node:http";
-import https from "node:https";
 import net from "node:net";
-import tls from "node:tls";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -41,74 +32,63 @@ import { Transform } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 
-import { XO_PREFIX, createTelescope, loaderTag, responseHeaders, shouldInject, upstreamRequestHeaders } from "../telescope/server/index.mjs";
-import { appUrl, createRegistry, ownsRequest, parseTargetSpec, portOf, routeForHost, versionPick } from "./targets.mjs";
+import { escapeHtml, serveFiles } from "./files.mjs";
+import { BRIDGE_PATH, XO_PREFIX, bridgeTag, framePolicy, responseHeaders, shouldInject, upstreamRequestHeaders } from "./inject.mjs";
+import { createSources, describeSource, galileoOrigins, parseLocation, parseSourceSpec, portOf, routeForHost, sourceUrl } from "./sources.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const GATEWAY_DIR = path.join(HERE, "..");
-const LAUNCHER_DIR = path.join(HERE, "..", "launcher");
-const HOME_DIR = path.join(HERE, "..", "home");
-/** Where the launcher is on the bare host; the home page has `/`. */
-const LAUNCHER_PATH = "/launcher";
-/** Pages of the gateway's own: scripts and styles from this origin only. */
-const PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'";
-const MAX_BODY_BYTES = 256 * 1024;
-const PROBE_TIMEOUT_MS = 600;
+const ROOT = path.join(HERE, "..");
+const TELESCOPE_DIR = path.join(ROOT, "telescope");
+/** telescope's own files, served on galileo's host. */
+const TELESCOPE_FILES = {
+	"telescope.js": "text/javascript; charset=utf-8",
+	"telescope.css": "text/css; charset=utf-8",
+	"icon.svg": "image/svg+xml",
+};
+/** The routes telescope answers on galileo's host; anything else there is galileo's own. */
+const TELESCOPE_ROUTE = /^\/(?:sources\/?|s\/.*)?$/;
+const MAX_BODY_BYTES = 64 * 1024;
 
-export function createGateway({
-	targets = [],
-	dataDir = path.join(HERE, "..", "data"),
-	/** The port the gateway is reached on, when a host that mounts it listens instead of `server`. */
+export function createGalileo({
+	sources = [],
+	dataDir = path.join(ROOT, "data"),
+	/** The port galileo is reached on, when something other than `server` listens. */
 	port,
-	/** Where people add apps, as the 404 pages name it; xo-client passes "Settings › Apps". */
-	addAppsIn = "the launcher",
-	/** The bare-host path the 404 pages link to for that: the launcher on its own, the host's home when mounted. */
-	addAppsAt = addAppsIn === "the launcher" ? LAUNCHER_PATH : "/",
-	log = (...parts) => console.log("[gateway]", ...parts),
-}) {
-	const registry = createRegistry({ dataDir, initial: targets });
-	// telescope keeps its threads, designs, agent requests and captures beside the app list.
-	const telescope = createTelescope({ dataDir, log });
-	const runId = randomBytes(3).toString("hex");
-	/** An app by name, as it was added on the command line, in the launcher or through its API. */
-	function lookup(name) {
-		return registry.get(name);
-	}
+	log = (...parts) => console.log("[galileo]", ...parts),
+} = {}) {
+	const registry = createSources({ dataDir, initial: sources });
 
-	/** Every app's name, in order. */
-	function appNames() {
-		return registry
-			.list()
-			.map((target) => target.name)
-			.sort();
-	}
-
-	/** Answers a request: the home page, the launcher and their API on the bare host, an app on each of its hosts. */
+	/** Answers a request: telescope and the sources API on galileo's host, a source on its own. */
 	function handle(req, res) {
-		const route = routeForHost(req.headers.host, lookup);
-		const done = (promise) => promise.catch((error) => sendJson(res, error.status ?? 500, { error: error.message }));
-		if (route.kind === "launcher") return done(handleLauncher(req, res));
-		if (route.kind === "unknown") return unknownApp(req, res, route.name);
-		if (route.kind === "unknown-version") return unknownVersion(req, res, route);
-		if (req.url.startsWith(XO_PREFIX)) return done(handleXo(req, res, route));
-		// acme.localhost:4100/dev/pricing picks the dev version: dev.acme.localhost:4100/pricing.
-		const pick = versionPick(req, route, portFor(req));
-		if (pick) {
-			res.writeHead(302, { location: pick, "cache-control": "no-store" });
-			res.end();
-			return;
+		const where = routeForHost(req.headers.host, registry.get);
+		if (where.kind === "galileo") return handleGalileo(req, res).catch((error) => fail(res, error));
+		if (where.kind === "foreign") return misdirected(res);
+		// Every response on a source's address, errors included, may be framed by galileo alone.
+		const done = (promise) => promise.catch((error) => fail(res, error, frameHeaders(req)));
+		if (where.kind === "unknown") return unknownSource(req, res, where.name);
+		if (req.url.startsWith(XO_PREFIX)) return done(handleSourceXo(req, res));
+		if (where.source.type === "files") {
+			return done(serveFiles(where.source, req, res, { tag: bridgeTag(), headers: frameHeaders(req), page: (content) => galileoPage(req, content) }));
 		}
-		proxy(req, res, route);
+		proxy(req, res, where.source);
 	}
 
-	/** WebSocket upgrades: tunnelled to the version an app's host names; any other is closed. */
+	/**
+	 * WebSocket upgrades: tunnelled to a port source, when they come from that
+	 * source's own pages, galileo's, or no page at all; any other is refused.
+	 */
 	function upgrade(req, socket, head) {
-		const route = routeForHost(req.headers.host, lookup);
-		if (route.kind !== "app" || req.url.startsWith(XO_PREFIX)) {
+		const where = routeForHost(req.headers.host, registry.get);
+		if (where.kind !== "source" || where.source.type !== "port" || req.url.startsWith(XO_PREFIX)) {
 			socket.destroy();
 			return;
 		}
-		tunnel(req, socket, head, route);
+		const origin = req.headers.origin;
+		if (origin && origin !== `http://${req.headers.host}` && !galileoOrigins(portFor(req)).includes(origin)) {
+			socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+			return;
+		}
+		tunnel(req, socket, head, where.source);
 	}
 
 	const server = http.createServer(handle);
@@ -118,21 +98,93 @@ export function createGateway({
 		return portOf(req.headers.host, port ?? server.address()?.port);
 	}
 
-	// ------------------------------------------------------------------ apps
+	/** What every response of a source carries: galileo, and the source itself, may frame it. */
+	function frameHeaders(req) {
+		return { "content-security-policy": framePolicy(galileoOrigins(portFor(req))) };
+	}
 
-	/** Forwards a request to the version the host names, and carries telescope into pages. */
-	function proxy(req, res, route) {
-		const upstream = route.version.upstream;
-		const secure = upstream.protocol === "https:";
-		const upstreamReq = (secure ? https : http).request(
-			{
-				hostname: upstream.hostname,
-				port: upstreamPort(upstream),
-				method: req.method,
-				path: req.url,
-				headers: upstreamRequestHeaders(req.headers, upstream),
-				servername: secure ? upstream.hostname : undefined,
-			},
+	// ------------------------------------------------------------ galileo's host
+
+	async function handleGalileo(req, res) {
+		const route = new URL(req.url, "http://galileo").pathname;
+		// Node sends no body for HEAD, so a page or a file answers HEAD as it answers GET.
+		const reading = req.method === "GET" || req.method === "HEAD";
+
+		if (reading && TELESCOPE_ROUTE.test(route)) return sendTelescope(req, res);
+		if (reading && route.startsWith("/__xo/telescope/")) {
+			const name = route.slice("/__xo/telescope/".length);
+			if (!Object.hasOwn(TELESCOPE_FILES, name)) return sendJson(res, 404, { error: "Not found" });
+			return sendBody(res, 200, TELESCOPE_FILES[name], await readFile(path.join(TELESCOPE_DIR, name)));
+		}
+		if (reading && route === "/__xo/health") {
+			return sendJson(res, 200, { ok: true, sources: registry.list().map((source) => source.name) });
+		}
+		if (!route.startsWith("/__xo/api/")) return sendJson(res, 404, { error: "Not found" });
+
+		// Only telescope, on galileo's own host, may read or change the sources.
+		guardSameOrigin(req);
+		if (route === "/__xo/api/sources" && req.method === "GET") {
+			return sendJson(res, 200, { sources: await describeAll(req) });
+		}
+		// Adds a source, or points a name somewhere else: { name, location }.
+		if (route === "/__xo/api/sources" && req.method === "POST") {
+			requireJson(req);
+			const body = await readJson(req);
+			const location = parseLocation(body.location, { relative: false });
+			if (location.type === "port" && location.port === portFor(req)) {
+				throw Object.assign(new Error(`${location.port} is galileo's own port`), { status: 400 });
+			}
+			const { source, isNew } = registry.add({ name: body.name, ...location });
+			log(`${isNew ? "added" : "changed"} ${source.name} → ${where(source)}`);
+			return sendJson(res, isNew ? 201 : 200, { source: await describeSource(source, portFor(req)) });
+		}
+		const one = /^\/__xo\/api\/sources\/([a-z0-9-]+)$/.exec(route);
+		if (one && req.method === "DELETE") {
+			if (!registry.remove(one[1])) return sendJson(res, 404, { error: "No such source" });
+			log(`removed ${one[1]}`);
+			return sendJson(res, 200, { ok: true });
+		}
+		return sendJson(res, 404, { error: "Not found" });
+	}
+
+	/** telescope's one page. It frames sources, and nothing frames it. */
+	async function sendTelescope(req, res) {
+		const port = portFor(req);
+		const policy = [
+			"default-src 'self'",
+			"script-src 'self'",
+			"style-src 'self'",
+			"img-src 'self' data:",
+			"connect-src 'self'",
+			`frame-src http://*.localhost:${port}`,
+			"base-uri 'none'",
+			"form-action 'self'",
+			"frame-ancestors 'none'",
+		].join("; ");
+		return sendBody(res, 200, "text/html; charset=utf-8", await readFile(path.join(TELESCOPE_DIR, "index.html")), {
+			"content-security-policy": policy,
+		});
+	}
+
+	async function describeAll(req) {
+		return Promise.all(registry.list().map((source) => describeSource(source, portFor(req))));
+	}
+
+	// ------------------------------------------------------------ a source's host
+
+	async function handleSourceXo(req, res) {
+		const route = new URL(req.url, "http://source").pathname;
+		if (req.method === "GET" && route === BRIDGE_PATH) {
+			return sendBody(res, 200, "text/javascript; charset=utf-8", await readFile(path.join(TELESCOPE_DIR, "bridge.js")), frameHeaders(req));
+		}
+		return sendJson(res, 404, { error: "Not found" }, frameHeaders(req));
+	}
+
+	/** Forwards a request to a port source, framed by galileo alone, with the bridge appended to pages. */
+	function proxy(req, res, source) {
+		const upstreamHost = `localhost:${source.port}`;
+		const upstreamReq = http.request(
+			{ hostname: "localhost", port: source.port, method: req.method, path: req.url, headers: upstreamRequestHeaders(req.headers, upstreamHost) },
 			(up) => {
 				const inject = shouldInject(req, up);
 				const nonce = inject ? randomBytes(16).toString("base64") : undefined;
@@ -142,15 +194,16 @@ export function createGateway({
 					responseHeaders(up.headers, {
 						inject,
 						nonce,
-						upstreamOrigin: upstream.origin,
-						gatewayOrigin: `http://${req.headers.host}`,
+						upstreamOrigins: [`http://localhost:${source.port}`, `http://127.0.0.1:${source.port}`, `http://[::1]:${source.port}`],
+						sourceOrigin: `http://${req.headers.host}`,
+						frameOrigins: galileoOrigins(portFor(req)),
 					}),
 				);
 				if (!inject) {
 					up.pipe(res);
 					return;
 				}
-				up.pipe(appendAtEnd(`\n${tagFor(route, nonce)}\n`)).pipe(res);
+				up.pipe(appendAtEnd(`\n${bridgeTag({ nonce })}\n`)).pipe(res);
 			},
 		);
 		upstreamReq.on("error", (error) => {
@@ -158,97 +211,19 @@ export function createGateway({
 				res.destroy(error);
 				return;
 			}
-			unreachable(req, res, error, route);
+			waiting(req, res, source, error);
 		});
 		req.pipe(upstreamReq);
 	}
 
-	function tagFor({ target, version }, nonce) {
-		return loaderTag({
-			nonce,
-			previewId: `${target.name}-${version.name}-${runId}`,
-			project: target.name,
-			version: version.name,
-			versions: target.versions.map((item) => item.name),
-		});
-	}
-
-	/** The version is down: a page that says so, still carrying telescope, and retries by itself. */
-	function unreachable(req, res, error, route) {
-		const name = describeRoute(route);
-		const origin = route.version.upstream.origin;
-		if (!acceptsHtml(req)) {
-			res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
-			res.end(`${name} (${origin}) is not reachable: ${error.code ?? error.message}\n`);
-			return;
-		}
-		const nonce = randomBytes(16).toString("base64");
-		res.writeHead(502, {
-			"content-type": "text/html; charset=utf-8",
-			"cache-control": "no-store",
-			"content-security-policy": `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'`,
-		});
-		res.end(
-			`<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="2"><title>Waiting for ${escapeHtml(name)}</title>` +
-				`<body style="font:15px system-ui;padding:48px;color:#222"><h1 style="font-size:20px">Waiting for ${escapeHtml(name)}</h1>` +
-				`<p>Nothing is answering at ${escapeHtml(origin)} yet (${escapeHtml(error.code ?? error.message)}). ` +
-				`This page retries every 2 seconds.</p></body>` +
-				tagFor(route, nonce),
-		);
-	}
-
-	/** A name nobody registered: list the ones that are, and point to where apps are added. */
-	function unknownApp(req, res, name) {
-		const port = portFor(req);
-		if (!acceptsHtml(req)) return sendJson(res, 404, { error: `No app called "${name}" on this gateway` });
-		const links = appNames()
-			.map((app) => `<li><a href="${appUrl(app, port)}">${escapeHtml(app)}</a></li>`)
-			.join("");
-		res.writeHead(404, {
-			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
-		});
-		res.end(
-			`<!doctype html><meta charset="utf-8"><title>No app called ${escapeHtml(name)}</title>` +
-				`<body style="font:15px system-ui;padding:48px;color:#222"><h1 style="font-size:20px">No app called “${escapeHtml(name)}”</h1>` +
-				`<p>Apps on this gateway:</p><ul>${links || "<li>none yet</li>"}</ul>` +
-				`<p><a href="http://localhost:${port}${addAppsAt}">Add one in ${escapeHtml(addAppsIn)}</a></p></body>`,
-		);
-	}
-
-	/** A version name nobody registered for this app: list the ones that are. */
-	function unknownVersion(req, res, route) {
-		const { target, name } = route;
-		const port = portFor(req);
-		if (!acceptsHtml(req)) return sendJson(res, 404, { error: `${target.name} has no version called "${name}"` });
-		const links = target.versions
-			.map((version) => `<li><a href="${appUrl(target.name, port, version.name)}">${escapeHtml(version.name)}</a></li>`)
-			.join("");
-		res.writeHead(404, {
-			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
-		});
-		res.end(
-			`<!doctype html><meta charset="utf-8"><title>No version called ${escapeHtml(name)}</title>` +
-				`<body style="font:15px system-ui;padding:48px;color:#222"><h1 style="font-size:20px">${escapeHtml(target.name)} has no version called “${escapeHtml(name)}”</h1>` +
-				`<p>Versions of ${escapeHtml(target.name)}:</p><ul>${links}</ul>` +
-				`<p><a href="http://localhost:${port}${addAppsAt}">Add one in ${escapeHtml(addAppsIn)}</a></p></body>`,
-		);
-	}
-
-	/** WebSocket upgrades (dev-server hot reload) are piped straight through to the version. */
-	function tunnel(req, socket, head, route) {
-		const upstream = route.version.upstream;
-		const secure = upstream.protocol === "https:";
-		const port = upstreamPort(upstream);
-		const upstreamSocket = secure
-			? tls.connect({ host: upstream.hostname, port, servername: upstream.hostname })
-			: net.connect({ host: upstream.hostname, port });
-		upstreamSocket.once(secure ? "secureConnect" : "connect", () => {
+	/** WebSocket upgrades (dev-server hot reload) are piped straight through to the port. */
+	function tunnel(req, socket, head, source) {
+		const upstreamSocket = net.connect({ host: "localhost", port: source.port });
+		upstreamSocket.once("connect", () => {
 			const lines = [`${req.method} ${req.url} HTTP/1.1`];
 			for (let i = 0; i < req.rawHeaders.length; i += 2) {
 				const name = req.rawHeaders[i];
-				lines.push(`${name}: ${name.toLowerCase() === "host" ? upstream.host : req.rawHeaders[i + 1]}`);
+				lines.push(`${name}: ${name.toLowerCase() === "host" ? `localhost:${source.port}` : req.rawHeaders[i + 1]}`);
 			}
 			upstreamSocket.write(`${lines.join("\r\n")}\r\n\r\n`);
 			if (head?.length) upstreamSocket.write(head);
@@ -263,158 +238,105 @@ export function createGateway({
 		socket.on("error", close);
 	}
 
-	// ------------------------------------------------------ an app's /__xo/*
-
-	/** An app's `/__xo/*`: its health and the app list are galileo's; everything else is telescope's. */
-	async function handleXo(req, res, route) {
-		const { target, version } = route;
-		const path = new URL(req.url, "http://gateway").pathname;
-
-		if (req.method === "GET" && path === "/__xo/health") {
-			return sendJson(res, 200, { ok: true, app: target.name, version: version.name, upstream: version.upstream?.origin ?? null });
+	/** Nothing answers on the port yet: a page that says so and tries again every 2 seconds. */
+	function waiting(req, res, source, error) {
+		const reason = error.code ?? error.message;
+		if (!acceptsHtml(req)) {
+			res.writeHead(502, { ...frameHeaders(req), "content-type": "text/plain; charset=utf-8" });
+			res.end(`Nothing answers on port ${source.port} for ${source.name} (${reason})\n`);
+			return;
 		}
-		// The navbar's switcher reads the list; changing it is left to the launcher.
-		if (req.method === "GET" && path === "/__xo/api/targets") {
-			guardSameOrigin(req);
-			const targets = await describeTargets(req);
-			return sendJson(res, 200, { current: target.name, currentVersion: version.name, manageIn: addAppsIn, manageAt: addAppsAt, targets });
-		}
-		const app = { name: target.name, version: version.name, upstream: version.upstream?.origin ?? null, label: describeRoute(route) };
-		if (await telescope.handleApp(req, res, app)) return;
-		return sendJson(res, 404, { error: "Not found" });
+		const { html, headers } = galileoPage(req, {
+			title: `Waiting for ${source.name}`,
+			refresh: 2,
+			body:
+				`<h1>Waiting for ${escapeHtml(source.name)}</h1>` +
+				`<p>Nothing answers on port ${source.port} yet (${escapeHtml(reason)}). galileo starts nothing: start the app, and this page tries again every 2 seconds.</p>`,
+		});
+		res.writeHead(502, { ...headers, "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+		res.end(html);
 	}
 
-	// ------------------------------------------------------------- launcher
-
-	async function handleLauncher(req, res) {
-		const url = new URL(req.url, "http://gateway");
-		const route = url.pathname;
-
-		if (req.method === "GET" && route === "/") {
-			return sendFile(res, path.join(HOME_DIR, "index.html"), { "content-security-policy": PAGE_CSP });
-		}
-		if (req.method === "GET" && (route === LAUNCHER_PATH || route === `${LAUNCHER_PATH}/`)) {
-			return sendFile(res, path.join(LAUNCHER_DIR, "index.html"), { "content-security-policy": PAGE_CSP });
-		}
-		if (req.method === "GET" && ["/__xo/home/home.js", "/__xo/home/home.css", "/__xo/home/icon.svg"].includes(route)) {
-			return sendFile(res, path.join(HOME_DIR, path.basename(route)));
-		}
-		if (req.method === "GET" && (route === "/__xo/launcher/launcher.js" || route === "/__xo/launcher/launcher.css")) {
-			return sendFile(res, path.join(LAUNCHER_DIR, path.basename(route)));
-		}
-		// telescope's design editor and every app's design.
+	/** A name nobody added: say so, and list the sources there are. */
+	function unknownSource(req, res, name) {
+		if (!acceptsHtml(req)) return sendJson(res, 404, { error: `No source called "${name}"` }, frameHeaders(req));
 		const port = portFor(req);
-		if (await telescope.handleGateway(req, res, { apps: appNames().map((name) => ({ name, url: appUrl(name, port) })) })) return;
-		if (req.method === "GET" && route === "/__xo/health") {
-			return sendJson(res, 200, { ok: true, apps: appNames() });
-		}
-		if (route.startsWith("/__xo/api/")) guardSameOrigin(req);
-
-		if (route === "/__xo/api/targets" && req.method === "GET") {
-			return sendJson(res, 200, { targets: await describeTargets(req) });
-		}
-		// Adds an app, or a version of one: { name, version?, upstream, makeDefault? }.
-		if (route === "/__xo/api/targets" && req.method === "POST") {
-			requireJson(req);
-			const body = await readJson(req);
-			const { target, version, isNew } = registry.add({
-				name: body.name,
-				version: body.version,
-				upstream: body.upstream,
-				makeDefault: body.makeDefault === true,
-			});
-			log(`${isNew ? "added" : "updated"} ${target.name} (${version.name}) → ${version.upstream.origin}`);
-			return sendJson(res, isNew ? 201 : 200, { target: (await describeTargets(req)).find((item) => item.name === target.name) });
-		}
-		const appRoute = /^\/__xo\/api\/targets\/([a-z0-9-]+)$/.exec(route);
-		if (appRoute && req.method === "DELETE") {
-			if (!registry.remove(appRoute[1])) return sendJson(res, 404, { error: "No such app" });
-			log(`removed ${appRoute[1]}`);
-			return sendJson(res, 200, { ok: true });
-		}
-		// { defaultVersion }: which version the app's own host serves.
-		if (appRoute && req.method === "PATCH") {
-			requireJson(req);
-			const body = await readJson(req);
-			if (!registry.get(appRoute[1])) return sendJson(res, 404, { error: "No such app" });
-			if (!registry.setDefault(appRoute[1], String(body.defaultVersion ?? ""))) return sendJson(res, 400, { error: "No such version" });
-			log(`${appRoute[1]}: default version is now ${body.defaultVersion}`);
-			return sendJson(res, 200, { target: (await describeTargets(req)).find((item) => item.name === appRoute[1]) });
-		}
-		const versionRoute = /^\/__xo\/api\/targets\/([a-z0-9-]+)\/versions\/([a-z0-9-]+)$/.exec(route);
-		if (versionRoute && req.method === "DELETE") {
-			const [, app, versionName] = versionRoute;
-			if (!registry.removeVersion(app, versionName)) return sendJson(res, 404, { error: "No such version" });
-			log(`${app}: removed version ${versionName}`);
-			return sendJson(res, 200, { target: (await describeTargets(req)).find((item) => item.name === app) });
-		}
-
-		return sendJson(res, 404, { error: "Not found" });
+		const links = registry
+			.list()
+			.map((source) => `<li><a href="http://localhost:${port}/s/${source.name}/" target="_top">${escapeHtml(source.name)}</a></li>`)
+			.join("");
+		const { html, headers } = galileoPage(req, {
+			title: `No source called ${name}`,
+			bridge: false,
+			body:
+				`<h1>No source called “${escapeHtml(name)}”</h1>` +
+				`<p>Sources on this galileo:</p><ul>${links || "<li>none yet</li>"}</ul>` +
+				`<p><a href="http://localhost:${port}/sources" target="_top">Add one on the Sources page</a></p>`,
+		});
+		res.writeHead(404, { ...headers, "content-type": "text/html; charset=utf-8" });
+		res.end(html);
 	}
 
 	/**
-	 * Every app with its gateway address, and each of its versions with its own
-	 * address and whether its server answers right now. `upstream` and `up` at
-	 * the app's level are its default version's.
+	 * A page galileo makes on a source's address (a listing, a file, the
+	 * waiting and missing pages): its own styles, the bridge unless told not
+	 * to, and a policy that allows those and nothing else.
 	 */
-	async function describeTargets(req) {
-		const port = portFor(req);
-		return Promise.all(
-			appNames().map(async (name) => {
-				const target = lookup(name);
-				const versions = await Promise.all(target.versions.map((version) => describeVersion(target, version, port)));
-				const main = versions.find((version) => version.default) ?? versions[0];
-				return {
-					name: target.name,
-					url: appUrl(target.name, port),
-					defaultVersion: main.name,
-					upstream: main.upstream,
-					up: main.up,
-					versions,
-				};
-			}),
-		);
-	}
-
-	async function describeVersion(target, version, port) {
-		const base = { name: version.name, url: appUrl(target.name, port, version.name), default: version.name === target.defaultVersion };
-		return { ...base, upstream: version.upstream.origin, up: await probe(version.upstream) };
+	function galileoPage(req, { title, body, refresh, bridge = true }) {
+		const nonce = randomBytes(16).toString("base64");
+		const policy = [
+			"default-src 'none'",
+			`script-src 'nonce-${nonce}'`,
+			`style-src 'nonce-${nonce}'`,
+			"img-src 'self' data:",
+			"media-src 'self'",
+			"frame-src 'self'",
+			"base-uri 'none'",
+			framePolicy(galileoOrigins(portFor(req))),
+		].join("; ");
+		const html =
+			`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+			(refresh ? `<meta http-equiv="refresh" content="${refresh}">` : "") +
+			`<title>${escapeHtml(title)}</title><style nonce="${nonce}">${PAGE_CSS}</style></head>` +
+			`<body><main>${body}</main>${bridge ? bridgeTag({ nonce }) : ""}</body></html>`;
+		return { html, headers: { "content-security-policy": policy } };
 	}
 
 	return {
 		server,
 		handle,
 		upgrade,
-		/** Whether a request is the gateway's when it shares a port with another app. */
-		owns: (req) => ownsRequest(req.headers.host, req.url),
-		/** telescope's store: threads, agent requests and designs. */
-		store: telescope.store,
-		registry,
-		/** Nothing to stop: galileo runs no servers but its own. Kept so hosts can await it on exit. */
-		async close() {},
+		sources: registry,
+		/** Nothing to stop but the server itself. */
+		async close() {
+			await new Promise((resolve) => (server.listening ? server.close(() => resolve()) : resolve()));
+		},
 	};
 }
 
-/** Whether anything answers at the app's address, within a short timeout. */
-function probe(upstream) {
-	return new Promise((resolve) => {
-		const secure = upstream.protocol === "https:";
-		const req = (secure ? https : http).request(
-			{ hostname: upstream.hostname, port: upstreamPort(upstream), method: "HEAD", path: "/", timeout: PROBE_TIMEOUT_MS },
-			(res) => {
-				res.resume();
-				resolve(true);
-			},
-		);
-		req.on("timeout", () => req.destroy());
-		req.on("error", () => resolve(false));
-		req.end();
-	});
-}
-
-function upstreamPort(url) {
-	return Number(url.port) || (url.protocol === "https:" ? 443 : 80);
-}
+/** Styles for the pages galileo makes on a source's address: plain, readable, light and dark. */
+const PAGE_CSS = [
+	":root { --bg: #f7f8f4; --fg: #1b2016; --muted: #5f6a57; --line: #dfe4d8; --accent: #3f6e18; --code: #eef1ea; color-scheme: light; }",
+	"@media (prefers-color-scheme: dark) { :root { --bg: #111410; --fg: #e8ede3; --muted: #9ca693; --line: #262c22; --accent: #83d63a; --code: #171b15; color-scheme: dark; } }",
+	"* { box-sizing: border-box; }",
+	"body { margin: 0; padding: 0 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; }",
+	"main { max-width: 980px; margin: 0 auto; padding: 24px 0 64px; }",
+	"h1 { margin: 8px 0 12px; font-size: 22px; letter-spacing: -0.01em; }",
+	"a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }",
+	".mono, td a, .crumbs { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }",
+	".crumbs { margin: 0 0 16px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }",
+	"table { width: 100%; border-collapse: collapse; }",
+	"th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; }",
+	"th { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }",
+	"td a { font-size: 14px; overflow-wrap: anywhere; }",
+	".n { text-align: right; white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }",
+	".note, .muted { color: var(--muted); } .note { font-size: 14px; margin-top: 20px; }",
+	".file-head { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin: 0 0 12px; font-size: 13px; }",
+	".file-head .mono { font-size: 14px; overflow-wrap: anywhere; }",
+	".text { margin: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--code); font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }",
+	".media img, .media video { display: block; max-width: 100%; height: auto; border-radius: 6px; }",
+	".pdf { width: 100%; height: calc(100vh - 120px); border: 1px solid var(--line); border-radius: 8px; }",
+].join("\n");
 
 function appendAtEnd(tail) {
 	return new Transform({
@@ -427,15 +349,21 @@ function appendAtEnd(tail) {
 	});
 }
 
+/** A host that is neither galileo's nor under `.localhost`: nothing to say to it, not even the names of the sources. */
+function misdirected(res) {
+	res.writeHead(421, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" });
+	res.end("Misdirected request\n");
+}
+
 function acceptsHtml(req) {
 	return String(req.headers.accept ?? "").includes("text/html");
 }
 
-/** Requests from any origin other than this one are refused; tools like curl send no Sec-Fetch-Site and pass. */
+/** Requests from any origin other than galileo's own are refused; tools like curl send no Sec-Fetch-Site and pass. */
 function guardSameOrigin(req) {
 	const site = req.headers["sec-fetch-site"];
 	if (site && site !== "same-origin" && site !== "none") {
-		throw Object.assign(new Error("Cross-origin requests are not accepted"), { status: 403 });
+		throw Object.assign(new Error("Only galileo's own pages may use this"), { status: 403 });
 	}
 }
 
@@ -444,23 +372,6 @@ function requireJson(req) {
 	if (!String(req.headers["content-type"] ?? "").startsWith("application/json")) {
 		throw Object.assign(new Error("Send JSON"), { status: 415 });
 	}
-}
-
-const TYPES = { ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".html": "text/html; charset=utf-8", ".svg": "image/svg+xml" };
-
-async function sendFile(res, file, headers = {}) {
-	return sendBody(res, 200, TYPES[path.extname(file)] ?? "application/octet-stream", await readFile(file), headers);
-}
-
-function sendBody(res, status, type, body, headers = {}) {
-	res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
-	res.end(body);
-}
-
-function sendJson(res, status, value) {
-	if (res.headersSent) return;
-	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-	res.end(JSON.stringify(value));
 }
 
 async function readJson(req) {
@@ -479,53 +390,57 @@ async function readJson(req) {
 	}
 }
 
-/** An app, with its version when it has more than one: "acme" or "acme (dev)". */
-function describeRoute({ target, version }) {
-	return target.versions.length > 1 ? `${target.name} (${version.name})` : target.name;
+function sendBody(res, status, type, body, headers = {}) {
+	res.writeHead(status, { "content-type": type, "cache-control": "no-store", "x-content-type-options": "nosniff", ...headers });
+	res.end(body);
 }
 
-function escapeHtml(value) {
-	return String(value).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+function sendJson(res, status, value, headers = {}) {
+	if (res.headersSent) return res.end();
+	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
+	res.end(JSON.stringify(value));
 }
 
-/** An app's addresses, as the gateway prints them when it starts. */
-export function logApp(target, port, print = console.log) {
-	const main = target.versions.find((version) => version.name === target.defaultVersion) ?? target.versions[0];
-	print(`[gateway] ${appUrl(target.name, port)} → ${main.upstream.origin}${target.versions.length > 1 ? ` (${main.name})` : ""}`);
-	if (target.versions.length < 2) return;
-	for (const version of target.versions) {
-		print(`[gateway]   ${appUrl(target.name, port, version.name)} → ${version.upstream.origin}`);
-	}
+function fail(res, error, headers) {
+	if (res.headersSent) return res.destroy(error);
+	sendJson(res, error.status ?? 500, { error: error.message }, headers);
+}
+
+/** Where a source points, as galileo reports it. */
+function where(source) {
+	return source.type === "port" ? `localhost:${source.port}` : source.path;
+}
+
+/** A source's address, as galileo prints it when it starts. */
+export function logSource(source, port, print = console.log) {
+	print(`[galileo] ${sourceUrl(source.name, port)} → ${where(source)}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	// Settings may sit in .env.local beside the checkout; what the shell sets wins.
-	const envFile = path.join(GATEWAY_DIR, ".env.local");
+	const envFile = path.join(ROOT, ".env.local");
 	if (existsSync(envFile) && typeof process.loadEnvFile === "function") process.loadEnvFile(envFile);
-	const { values } = parseArgs({
-		options: {
-			target: { type: "string", multiple: true },
-			upstream: { type: "string" },
-			name: { type: "string" },
-			port: { type: "string" },
-		},
-	});
-	const targets = (values.target ?? []).map(parseTargetSpec);
-	if (values.upstream) targets.push({ name: values.name ?? "app", upstream: values.upstream });
+	const { values } = parseArgs({ options: { source: { type: "string", multiple: true }, port: { type: "string" } } });
+	let sources;
+	try {
+		sources = (values.source ?? []).map((spec) => parseSourceSpec(spec));
+	} catch (error) {
+		console.error(`[galileo] ${error.message}`);
+		process.exit(1);
+	}
 	const port = Number(values.port ?? process.env.PORT ?? 4100);
-	const dataDir = process.env.XO_GATEWAY_DATA ? path.resolve(process.env.XO_GATEWAY_DATA) : undefined;
-	const gateway = createGateway({ targets, dataDir });
-	gateway.server.on("error", (error) => {
+	const dataDir = process.env.GALILEO_DATA ? path.resolve(process.env.GALILEO_DATA) : undefined;
+	const galileo = createGalileo({ sources, dataDir });
+	galileo.server.on("error", (error) => {
 		if (error.code !== "EADDRINUSE") throw error;
 		console.error(`[galileo] port ${port} is taken: start it on another with PORT=${port + 1} npm start`);
 		process.exit(1);
 	});
-	gateway.server.listen(port, "127.0.0.1", () => {
-		console.log(`[galileo] home: http://localhost:${port}/`);
-		console.log(`[galileo] launcher: http://localhost:${port}${LAUNCHER_PATH}`);
-		for (const target of gateway.registry.list()) logApp(target, port);
+	galileo.server.listen(port, "127.0.0.1", () => {
+		console.log(`[galileo] http://localhost:${port}/ telescope: the Sources page, and every source under its bar`);
+		for (const source of galileo.sources.list()) logSource(source, port);
 	});
 	for (const signal of ["SIGINT", "SIGTERM"]) {
-		process.once(signal, () => gateway.close().finally(() => process.exit(0)));
+		process.once(signal, () => galileo.close().finally(() => process.exit(0)));
 	}
 }
