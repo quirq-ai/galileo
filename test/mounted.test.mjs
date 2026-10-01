@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -60,6 +60,22 @@ after(() => {
 });
 
 describe("mounted beside another app", () => {
+	test("options for folders, which galileo no longer has, are ignored: nothing becomes an app by itself", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "galileo-root-"));
+		mkdirSync(path.join(root, "notes"));
+		writeFileSync(path.join(root, "notes", "index.html"), "<h1>notes</h1>");
+		const data = mkdtempSync(path.join(tmpdir(), "galileo-old-options-"));
+		try {
+			const gateway = createGateway({ dataDir: data, port, log: () => {}, roots: [root, { dir: root, projectsOnly: true }], exclude: [], idleMinutes: 5, env: {} });
+			assert.equal(gateway.folders, undefined);
+			assert.deepEqual(gateway.registry.list(), []);
+			await gateway.close();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+			rmSync(data, { recursive: true, force: true });
+		}
+	});
+
 	test("the library exports the same rule the gateway applies", () => {
 		assert.equal(ownsRequest(`docs.localhost:${port}`, "/"), true);
 	});
@@ -89,6 +105,13 @@ describe("mounted beside another app", () => {
 		const unknown = await get(`nobody.localhost:${port}`, "/", { accept: "application/json" });
 		assert.equal(unknown.status, 404);
 		assert.match(unknown.body, /No app called/);
+	});
+
+	test("an app's navbar list points at the host's page for managing apps", async () => {
+		const response = await get(`docs.localhost:${port}`, "/__xo/api/targets", { "sec-fetch-site": "same-origin" });
+		const data = JSON.parse(response.body);
+		assert.equal(data.manageIn, "Settings › Apps");
+		assert.equal(data.manageAt, "/");
 	});
 
 	test("its 404 pages send people to where the host adds apps", async () => {

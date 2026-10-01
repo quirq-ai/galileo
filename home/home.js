@@ -2,8 +2,7 @@
  * galileo's home page: the routes table, kept current. The app names are read
  * every 2 seconds while the page is visible (`/__xo/health`, cheap); every app
  * in detail (`/__xo/api/targets`) when those names change, when the page comes
- * back, and every 10 seconds. Everything is built with text nodes: folder names
- * and commands come from disk.
+ * back, and every 10 seconds. Everything is built with text nodes.
  */
 const HEALTH_MS = 2000;
 const DETAIL_MS = 10_000;
@@ -12,10 +11,7 @@ const port = location.port || "80";
 for (const node of document.querySelectorAll("[data-port]")) node.textContent = port;
 
 const routes = document.getElementById("routes");
-/** The roots folders come from, so a folder can be named relative to its root. */
-let roots = [];
 const summary = document.getElementById("summary");
-const rootsLine = document.getElementById("roots");
 
 function el(tag, attrs, ...children) {
 	const node = document.createElement(tag);
@@ -36,11 +32,6 @@ async function getJson(path) {
 	return response.json();
 }
 
-/** `/Users/name/Projects/root` as `~/Projects/root`. */
-function homeShort(dir) {
-	return dir.replace(/^\/(?:Users|home)\/[^/]+/, "~");
-}
-
 /** An address without its scheme and trailing slash: `acme.localhost:4100`. */
 function bare(url) {
 	return url.replace(/^https?:\/\//, "").replace(/\/$/, "");
@@ -51,75 +42,21 @@ function servedVersion(app) {
 	return app.versions.find((version) => version.default) ?? app.versions[0];
 }
 
-/** What a version is doing, as a tone and a few words. */
-function versionState(app, version) {
-	if (!version) return { tone: "down", text: "no version" };
-	switch (version.state) {
-		case undefined:
-			return version.up ? { tone: "up", text: "answering" } : { tone: "down", text: "not answering" };
-		case "files":
-			return { tone: "up", text: "files" };
-		case "running":
-			return { tone: "up", text: version.external ? "running (started elsewhere)" : "running" };
-		case "starting":
-			return { tone: "busy", text: "starting" };
-		case "stopped":
-			return { tone: "idle", text: "starts when opened" };
-		case "failed":
-			return { tone: "down", text: app.folder?.server?.error ? `didn't start: ${app.folder.server.error}` : "didn't start" };
-		default:
-			return { tone: "idle", text: version.state };
-	}
+function stateCell(version) {
+	const up = Boolean(version?.up);
+	const text = up ? "answering" : "not answering";
+	return el("td", {}, el("span", { class: "state" }, el("span", { class: `dot ${up ? "up" : "down"}`, "aria-hidden": "true" }), text));
 }
 
-/** A folder by its place in its root (`web/`), or by its path when it's in none. */
-function folderName(dir) {
-	const root = roots.find((candidate) => dir.startsWith(`${candidate}/`));
-	return root ? `${dir.slice(root.length + 1)}/` : homeShort(dir);
-}
-
-/** How a folder is served, from what galileo found in it. */
-function howServed(folder) {
-	if (folder.serves === "files") return folder.from === "index.html" ? "a static site" : "its files";
-	const from = folder.from ?? "";
-	const script = /^package\.json: (\w+) \((.*)\)$/.exec(from);
-	if (script) return `${script[2]}, package.json ${script[1]}`;
-	const launch = /^(.*)\.claude\/launch\.json: (.+)$/.exec(from);
-	if (launch) return `“${launch[2]}”, ${launch[1] ? "its" : "the root's"} launch.json`;
-	return from || "a dev server";
-}
-
-/** Where an app's requests go: what, and in a smaller line, how. */
-function goesTo(app, version, isMain) {
-	if (isMain && app.versions.length > 1) return [`its ${version.name} version`, null];
-	if (version && !version.state) return [version.upstream ? bare(version.upstream) : "nothing yet", app.folder ? "added" : null];
-	const folder = app.folder;
-	if (!folder) return ["an added app", null];
-	const port = folder.server?.port ? `, on :${folder.server.port}` : "";
-	return [folderName(folder.dir), `${howServed(folder)}${port}`];
-}
-
+/** Where a row's requests go: its port or URL, or for an app with versions, which one it serves. */
 function goesToCell(app, version, isMain) {
-	const [what, how] = goesTo(app, version, isMain);
-	return el("td", { class: "target" }, el("span", { class: "what" }, what), how ? el("span", { class: "how" }, how) : null);
-}
-
-function stateCell(state) {
-	return el("td", {}, el("span", { class: "state", title: state.text }, el("span", { class: `dot ${state.tone}`, "aria-hidden": "true" }), state.text));
+	const what = isMain && app.versions.length > 1 ? `its ${version.name} version` : bare(version.upstream);
+	return el("td", { class: "target" }, el("span", { class: "what" }, what));
 }
 
 function rowsFor(app) {
 	const main = servedVersion(app);
-	const title = app.folder?.displayName?.trim();
-	const rows = [
-		el(
-			"tr",
-			{},
-			el("td", {}, el("a", { class: "address", href: app.url }, bare(app.url)), title && title !== app.name ? el("span", { class: "title" }, title) : null),
-			goesToCell(app, main, true),
-			stateCell(versionState(app, main)),
-		),
-	];
+	const rows = [el("tr", {}, el("td", {}, el("a", { class: "address", href: app.url }, bare(app.url))), goesToCell(app, main, true), stateCell(main))];
 	if (app.versions.length > 1) {
 		for (const version of app.versions) {
 			rows.push(
@@ -128,7 +65,7 @@ function rowsFor(app) {
 					{ class: "version" },
 					el("td", {}, el("a", { class: "address", href: version.url }, bare(version.url)), version.default ? el("span", { class: "title" }, "default") : null),
 					goesToCell(app, version, false),
-					stateCell(versionState(app, version)),
+					stateCell(version),
 				),
 			);
 		}
@@ -139,26 +76,18 @@ function rowsFor(app) {
 function render(apps) {
 	const sorted = [...apps].sort((a, b) => a.name.localeCompare(b.name));
 	if (sorted.length === 0) {
-		routes.replaceChildren(el("tr", {}, el("td", { colspan: 3, class: "muted" }, "No apps yet. Add a folder to the XO root, or add an app in the launcher.")));
+		routes.replaceChildren(el("tr", {}, el("td", { colspan: 3, class: "muted" }, "No apps yet. Add one in the launcher, with a name and its port.")));
 	} else {
 		routes.replaceChildren(...sorted.flatMap(rowsFor));
 	}
-	const running = sorted.filter((app) => servedVersion(app)?.state === "running").length;
-	summary.textContent = `${sorted.length} ${sorted.length === 1 ? "app" : "apps"}${running ? `, ${running} running` : ""}`;
-}
-
-function showRoots(list) {
-	roots = list;
-	rootsLine.textContent = list.length ? `Folders from ${list.map(homeShort).join(", ")}` : "No XO root: only added apps are routed.";
-}
-
-function showProblem(message) {
-	summary.textContent = message;
+	const answering = sorted.filter((app) => servedVersion(app)?.up).length;
+	summary.textContent = `${sorted.length} ${sorted.length === 1 ? "app" : "apps"}, ${answering} answering`;
 }
 
 let names = null;
 let detailedAt = 0;
 let loading = null;
+// The first look happens even in a background tab, so the page isn't empty when it is shown.
 let first = true;
 
 function loadDetail() {
@@ -167,7 +96,9 @@ function loadDetail() {
 			detailedAt = Date.now();
 			render(targets ?? []);
 		})
-		.catch((error) => showProblem(`Couldn't read the routes: ${error.message}`))
+		.catch((error) => {
+			summary.textContent = `Couldn't read the routes: ${error.message}`;
+		})
 		.finally(() => {
 			loading = null;
 		});
@@ -179,7 +110,6 @@ async function tick() {
 		first = false;
 		try {
 			const health = await getJson("/__xo/health");
-			showRoots(health.roots ?? []);
 			const key = (health.apps ?? []).join("\n");
 			if (key !== names || Date.now() - detailedAt >= DETAIL_MS) {
 				names = key;
@@ -187,7 +117,7 @@ async function tick() {
 			}
 		} catch (error) {
 			names = null;
-			showProblem(`galileo didn't answer: ${error.message}`);
+			summary.textContent = `galileo didn't answer: ${error.message}`;
 		}
 	}
 	setTimeout(tick, HEALTH_MS);

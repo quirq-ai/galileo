@@ -6,7 +6,7 @@
 		<title>galileo launcher</title>
 		<link rel="icon" href="/__xo/home/icon.svg" type="image/svg+xml" />
 		<link rel="stylesheet" href="/__xo/launcher/launcher.css" />
-		<!-- The toolbar's own design editor, served by the gateway from the xo-toolbar project. -->
+		<!-- telescope's own design editor, served by galileo from telescope/. -->
 		<script src="/__xo/toolbar/designer.js" defer></script>
 		<script src="/__xo/launcher/launcher.js" defer></script>
 	</head>
@@ -28,28 +28,15 @@
 				<li class="empty">Loading…</li>
 			</ul>
 
-			<section class="card folders" id="folders-section" aria-labelledby="folders-title" hidden>
-				<h2 id="folders-title">Folders</h2>
-				<p class="muted" id="folders-summary"></p>
-				<div class="table-wrap">
-					<table class="folder-table">
-						<thead>
-							<tr><th>App</th><th>Serves</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr>
-						</thead>
-						<tbody id="folders"></tbody>
-					</table>
-				</div>
-			</section>
-
 			<section class="card design" aria-labelledby="design-title">
 				<div class="design-text">
-					<h2 id="design-title">Default toolbar</h2>
+					<h2 id="design-title">Default telescope</h2>
 					<p class="muted" id="design-summary">Every app uses this design until it has its own.</p>
 					<p class="hint">
 						Choose the tools, their order, where the bar docks and its color. Give one app its own design from its
-						Toolbar button, or from Customize in that app's toolbar.
+						Telescope button, or from Customize in telescope on that app's pages.
 					</p>
-					<button type="button" id="edit-default">Edit the default toolbar</button>
+					<button type="button" id="edit-default">Edit the default telescope</button>
 				</div>
 				<div class="design-preview" id="default-preview"></div>
 			</section>
@@ -78,7 +65,7 @@
 			</form>
 		</main>
 
-		<dialog class="editor" id="editor" aria-label="Toolbar design">
+		<dialog class="editor" id="editor" aria-label="telescope design">
 			<div class="editor-host" id="editor-host"></div>
 		</dialog>
 	</body>

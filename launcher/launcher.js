@@ -1,10 +1,10 @@
-// The launcher: the gateway's apps with their live status, and their toolbar
+// The launcher: the gateway's apps with their live status, and their telescope
 // designs. It is the only page allowed to add or remove apps, or to change any
 // app's design, because no app code ever runs on this origin.
 //
-// The design editor is the toolbar's own (XoDesigner, from the xo-toolbar
-// project, served at /__xo/toolbar/designer.js), mounted in shadow roots so the
-// toolbar's styles and this page's never meet.
+// The design editor is telescope's own (XoDesigner, from telescope/, served
+// at /__xo/toolbar/designer.js), mounted in shadow roots so telescope's styles
+// and this page's never meet.
 const port = location.port || "80";
 const list = document.getElementById("apps");
 const form = document.getElementById("add");
@@ -18,16 +18,12 @@ const dialog = document.getElementById("editor");
 const editorHost = document.getElementById("editor-host");
 const defaultPreview = document.getElementById("default-preview");
 const defaultSummary = document.getElementById("design-summary");
-const folderSection = document.getElementById("folders-section");
-const folderSummary = document.getElementById("folders-summary");
-const folderList = document.getElementById("folders");
 
 document.getElementById("gateway").textContent = `gateway on :${port}`;
 document.getElementById("edit-default").addEventListener("click", () => openEditor(null));
 
 let targets = [];
 let designs = null;
-let roots = [];
 let versionDraft = null;
 let shownDefault = "";
 let defaultObserver = null;
@@ -76,10 +72,10 @@ function row(target) {
 		{
 			class: "quiet",
 			type: "button",
-			title: own ? `${target.name} has its own toolbar design` : `${target.name} uses the default toolbar design`,
-			"aria-label": `Edit ${target.name}'s toolbar`,
+			title: own ? `${target.name} has its own telescope design` : `${target.name} uses the default telescope design`,
+			"aria-label": `Edit ${target.name}'s telescope`,
 		},
-		"Toolbar",
+		"Telescope",
 		el("span", { class: `badge${own ? " own" : ""}` }, own ? "own" : "default"),
 	);
 	toolbarButton.addEventListener("click", () => openEditor(target.name));
@@ -102,18 +98,6 @@ function row(target) {
 function versionList(target) {
 	const items = target.versions.map((version) => {
 		const actions = el("span", { class: "version-actions" });
-		// A folder's own version comes from the folder, so it can't be removed or made default here.
-		if (version.state) {
-			return el(
-				"li",
-				{ class: `version ${version.up ? "up" : "down"}` },
-				el("span", { class: "dot small", title: version.up ? "Answering" : "Not answering" }),
-				el("span", { class: "version-name" }, version.name),
-				version.default ? el("span", { class: "badge own" }, "default") : null,
-				el("a", { class: "mono", href: version.url }, version.url.replace(/^http:\/\//, "").replace(/\/$/, "")),
-				el("span", { class: "muted mono" }, `from the ${target.name} folder · ${folderState(version, target.folder)}`),
-			);
-		}
 		if (!version.default) {
 			actions.append(button("Make default", `Serve ${version.name} at ${target.url}`, async () => {
 				await api("PATCH", `/__xo/api/targets/${target.name}`, { defaultVersion: version.name });
@@ -200,78 +184,11 @@ function addVersion(target) {
 
 async function load() {
 	try {
-		let health;
-		[{ targets }, designs, health] = await Promise.all([api("GET", "/__xo/api/targets"), api("GET", "/__xo/api/toolbars"), api("GET", "/__xo/health")]);
-		roots = health.roots ?? [];
-		const added = targets.filter((target) => target.source !== "folder");
-		list.replaceChildren(
-			...(added.length
-				? added.map(row)
-				: [el("li", { class: "empty" }, roots.length ? "No apps added by hand. Every folder below has its own address already." : "No apps yet. Add one below.")]),
-		);
-		showFolders(targets.filter((target) => target.folder));
+		[{ targets }, designs] = await Promise.all([api("GET", "/__xo/api/targets"), api("GET", "/__xo/api/toolbars")]);
+		list.replaceChildren(...(targets.length ? targets.map(row) : [el("li", { class: "empty" }, "No apps yet. Add one below.")]));
 		showDefault();
 	} catch (error) {
 		showError(`Couldn't load apps: ${error.message}`);
-	}
-}
-
-// ---------------------------------------------------------------- folders
-
-/** Every folder in the gateway's roots, with what it serves and what its server is doing. */
-function showFolders(found) {
-	folderSection.hidden = !found.length;
-	if (!found.length) return;
-	const runs = found.filter((target) => target.folder.serves === "run").length;
-	folderSummary.textContent =
-		`${found.length} folders in ${roots.join(", ")} each have their own address. ` +
-		`${runs} start their dev server when you open them, and stop after 30 idle minutes; ${found.length - runs} are served as files. ` +
-		"A new folder appears by itself.";
-	folderList.replaceChildren(...found.map(folderRow));
-}
-
-function folderRow(target) {
-	const version = target.versions.find((item) => item.state) ?? target.versions[0];
-	const state = version.state;
-	const actions = el("div", { class: "actions" }, el("a", { class: "open", href: target.url, "aria-label": `Open ${target.name}` }, "Open"));
-	if (target.folder.serves === "run" && (state === "stopped" || state === "failed")) {
-		actions.append(named(button("Start", `Start ${target.name}'s dev server`, () => api("POST", `/__xo/api/folders/${target.name}/start`)), `Start ${target.name}`));
-	}
-	if ((state === "running" && !version.external) || state === "starting") {
-		actions.append(named(button("Stop", `Stop the dev server the gateway started for ${target.name}`, () => api("POST", `/__xo/api/folders/${target.name}/stop`)), `Stop ${target.name}`));
-	}
-	const xoName = target.folder.xoProject && target.folder.xoProject !== target.name ? el("div", { class: "muted small" }, `xo-project ${target.folder.xoProject}`) : null;
-	return el(
-		"tr",
-		{ class: `folder ${state}` },
-		el("td", {}, el("a", { class: "mono", href: target.url }, target.name, el("wbr"), ".localhost"), xoName),
-		el("td", { class: "muted" }, target.folder.from),
-		el("td", {}, el("span", { class: `state ${state}` }, folderState(version, target.folder))),
-		el("td", {}, actions),
-	);
-}
-
-/** Gives a row's button a name that says which app it acts on. */
-function named(node, label) {
-	node.setAttribute("aria-label", label);
-	return node;
-}
-
-/** What a folder app's server is doing, in a few words. */
-function folderState(version, folder) {
-	const port = version.upstream ? new URL(version.upstream).port : "";
-	const error = folder?.server?.error;
-	switch (version.state) {
-		case "files":
-			return "files";
-		case "running":
-			return version.external ? `running, already open on :${port}` : `running on :${port}`;
-		case "starting":
-			return "starting…";
-		case "failed":
-			return `didn't start: ${error ?? "see its page"}`;
-		default:
-			return error ? `not running (${error})` : "not running";
 	}
 }
 
@@ -309,7 +226,7 @@ document.getElementById("pick-example").textContent = `acme.localhost:${port}/li
 
 let sheet = null;
 
-/** A shadow root holding the toolbar's styles, so they and this page's never meet. */
+/** A shadow root holding telescope's styles, so they and this page's never meet. */
 function shadowOf(host) {
 	if (!sheet) {
 		sheet = new CSSStyleSheet();
@@ -325,7 +242,7 @@ function showDefault() {
 	const { layout, source } = designs.default;
 	const custom = designs.apps.filter((app) => app.source === "app").map((app) => app.name);
 	defaultSummary.textContent =
-		(source === "gateway" ? "Every app uses this design until it has its own." : "The toolbar's built-in design. Edit it to set every app's default.") +
+		(source === "gateway" ? "Every app uses this design until it has its own." : "telescope's built-in design. Edit it to set every app's default.") +
 		(custom.length ? ` ${custom.join(", ")} ${custom.length === 1 ? "has its" : "have their"} own.` : "");
 	const key = JSON.stringify(layout);
 	if (key === shownDefault) return;
@@ -372,8 +289,8 @@ function openEditor(name) {
 				"p",
 				{ class: "hint" },
 				name
-					? `How ${name} shows the toolbar with this design. Changes save as you make them; an open ${name} tab picks them up when you return to it.`
-					: "How every app without its own design shows the toolbar. Changes save as you make them.",
+					? `How ${name} shows telescope with this design. Changes save as you make them; an open ${name} tab picks them up when you return to it.`
+					: "How every app without its own design shows telescope. Changes save as you make them.",
 			),
 		);
 		preview.fit();
@@ -422,7 +339,7 @@ function openEditor(name) {
 		ui,
 		layout: entry.layout,
 		source: entry.source,
-		title: name ? `${name} toolbar` : "Default toolbar",
+		title: name ? `${name}'s telescope` : "Default telescope",
 		subtitle: `data/toolbars/${name || "_default"}.json`,
 		describe: (source) => describe(name, source),
 		commit(next, message) {
@@ -462,7 +379,7 @@ function describe(name, source) {
 	if (!name) {
 		return source === "gateway"
 			? "Every app without its own design uses this."
-			: "The toolbar's built-in design. A change here becomes every app's default.";
+			: "telescope's built-in design. A change here becomes every app's default.";
 	}
 	if (source === "app") return `${name} has its own design.`;
 	const base = source === "gateway" ? "the default design" : "the built-in design";

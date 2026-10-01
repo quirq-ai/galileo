@@ -13,7 +13,7 @@ import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileS
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
-import { toolbar } from "./toolbar.mjs";
+import { defaultLayout, normalizeLayout } from "../layout.mjs";
 
 /** The gateway's own default design lives beside the apps' designs; no app can be called `_default`. */
 const GATEWAY_DESIGN = "_default";
@@ -56,14 +56,14 @@ export function createStore(dir) {
 
 	function readDesign(name) {
 		try {
-			return toolbar.normalizeLayout(JSON.parse(readFileSync(designFile(name), "utf8")));
+			return normalizeLayout(JSON.parse(readFileSync(designFile(name), "utf8")));
 		} catch {
 			return null;
 		}
 	}
 
 	function writeDesign(name, input) {
-		const layout = toolbar.normalizeLayout(input);
+		const layout = normalizeLayout(input);
 		mkdirSync(layoutsDir, { recursive: true });
 		const temp = `${designFile(name)}.tmp`;
 		writeFileSync(temp, JSON.stringify(layout, null, 2));
@@ -155,7 +155,7 @@ export function createStore(dir) {
 		/** The design every app without its own gets. */
 		getDefault() {
 			const gateway = readDesign(GATEWAY_DESIGN);
-			return gateway ? { layout: gateway, source: "gateway" } : { layout: toolbar.defaultLayout(), source: "built-in" };
+			return gateway ? { layout: gateway, source: "gateway" } : { layout: defaultLayout(), source: "built-in" };
 		},
 
 		saveDefault(input) {

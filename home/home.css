@@ -6,7 +6,6 @@
 	--ink: #eef2ea;
 	--muted: #9ca693;
 	--lime: #83d63a;
-	--busy: #e2b93b;
 	--down: #e06c5a;
 	--idle: #7d8577;
 	color-scheme: dark;
@@ -204,12 +203,6 @@ h3 {
 	font-size: 13px;
 }
 
-.how {
-	display: block;
-	color: var(--muted);
-	font-size: 13px;
-}
-
 .state {
 	display: inline-flex;
 	align-items: center;
@@ -229,16 +222,8 @@ h3 {
 	background: var(--lime);
 }
 
-.dot.busy {
-	background: var(--busy);
-}
-
 .dot.down {
 	background: var(--down);
-}
-
-#roots {
-	margin-top: 12px;
 }
 
 .grid {

@@ -12,7 +12,7 @@ import {
 	rewriteSecurityHeaders,
 	shouldInject,
 	upstreamRequestHeaders,
-} from "../src/inject.mjs";
+} from "../server/inject.mjs";
 
 const page = (headers = {}, extra = {}) => ({
 	method: "GET",

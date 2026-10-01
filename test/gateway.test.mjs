@@ -97,6 +97,15 @@ describe("routing by name", () => {
 		}
 	});
 
+	test("an app's navbar list says where apps are managed: the launcher, at /launcher", async () => {
+		const { status, json } = await send("acme", "GET", "/__xo/api/targets");
+		assert.equal(status, 200);
+		assert.equal(json.current, "acme");
+		assert.equal(json.manageIn, "the launcher");
+		assert.equal(json.manageAt, "/launcher");
+		assert.ok(json.targets.some((target) => target.name === "other"));
+	});
+
 	test("the launcher moved to /launcher on the bare host", async () => {
 		for (const route of ["/launcher", "/launcher/"]) {
 			const launcher = await get(null, route, HTML);

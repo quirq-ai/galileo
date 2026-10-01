@@ -25,7 +25,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { XO_PREFIX } from "./inject.mjs";
+import { XO_PREFIX } from "../telescope/server/index.mjs";
 
 export const APP_DOMAIN = "localhost";
 /** The version an app gets when none is named. */
